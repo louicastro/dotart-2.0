@@ -1,10 +1,13 @@
-import type {
-  ProcessingSettings,
-  PuzzlePath,
-  PuzzleResult,
-  PuzzleWarning,
-  WorkerRequest,
-  WorkerResponse,
+import {
+  mapSettingsToPrecisionParams,
+  validateSettings,
+  type PrecisionParams,
+  type ProcessingSettings,
+  type PuzzlePath,
+  type PuzzleResult,
+  type PuzzleWarning,
+  type WorkerRequest,
+  type WorkerResponse,
 } from "./types";
 import {
   createDots,
@@ -152,6 +155,7 @@ function buildSinglePath(
   contour: RawContour,
   targetDots: number,
   settings: ProcessingSettings,
+  params: PrecisionParams,
   pathId: string,
 ): PuzzlePath | null {
   const unrolled = extractSingleStrokeIfThin(contour.points);
@@ -162,17 +166,17 @@ function buildSinglePath(
   if (length < 8) return null;
   const target = Math.min(targetDots, settings.dotBudget, strokePoints.length);
 
-  const epsilon = Math.max(0.4, Math.min(1.4, 0.45 + (10 - settings.fineDetail) * 0.08));
-  let simplified = ramerDouglasPeucker(strokePoints, epsilon, isClosed);
+  let simplified = ramerDouglasPeucker(strokePoints, params.rdpToleranceEpsilon, isClosed);
   const minimum = isClosed ? 6 : 2;
   if (simplified.length < minimum) simplified = strokePoints;
 
   const sampled = sampleAdaptiveDots(
     simplified,
     Math.max(minimum, target),
-    settings.minSpacing * (1.08 - settings.fineDetail * 0.025),
+    params.pixelMinSpacing,
     settings.fineDetail,
     isClosed,
+    params.cornerCurvatureThreshold,
   );
   if (sampled.length < minimum) return null;
 
@@ -192,6 +196,7 @@ function buildPuzzle(
   width: number,
   height: number,
   settings: ProcessingSettings,
+  params: PrecisionParams,
   processingMs: number,
 ): PuzzleResult {
   const ranked = deduplicateContours(rankContourCandidates(contours, width, height, settings));
@@ -213,7 +218,7 @@ function buildPuzzle(
   const rawPaths: PuzzlePath[] = [];
   usable.forEach((contour, index) => {
     const id = `path-${String(rawPaths.length + 1).padStart(2, "0")}`;
-    const p = buildSinglePath(contour, pathTargets[index], settings, id);
+    const p = buildSinglePath(contour, pathTargets[index], settings, params, id);
     if (p) rawPaths.push(p);
   });
 
@@ -224,7 +229,7 @@ function buildPuzzle(
   const suppressedPaths: PuzzlePath[] = [];
   suppressedContours.forEach((contour, index) => {
     const id = `suppressed-${String(index + 1).padStart(2, "0")}`;
-    const p = buildSinglePath(contour, Math.max(settings.closeContours ? 6 : 2, 8), settings, id);
+    const p = buildSinglePath(contour, Math.max(settings.closeContours ? 6 : 2, 8), settings, params, id);
     if (p) suppressedPaths.push(p);
   });
 
@@ -244,26 +249,37 @@ function buildPuzzle(
 
 async function runProcess(request: Extract<WorkerRequest, { type: "process" }>): Promise<void> {
   const started = performance.now();
-  const { requestId, file, settings } = request;
+  const { requestId, file, settings: rawSettings } = request;
   try {
     if (cancelled.has(requestId)) return;
+    const validated = validateSettings(rawSettings);
+    const params = mapSettingsToPrecisionParams(validated);
 
-    // Check intermediate cache: if image and edge-detection parameters match, reuse raw contours
+    // Dependency-aware cache key:
+    // Only image identity + preprocessing/edge extraction settings invalidate the expensive OpenCV contour extraction.
     const cacheKey = [
       file.name,
       file.size,
       file.lastModified,
-      settings.profile,
-      settings.contourSensitivity,
-      settings.lineArtEnhancement,
-      settings.backgroundSuppression,
+      validated.processingFocus,
+      validated.detailPreservation,
+      validated.backgroundSuppression,
+      validated.contourSensitivity,
+      validated.lineArtEnhancement,
     ].join("|");
 
     if (contourCache && contourCache.cacheKey === cacheKey) {
       progress(requestId, "Placing numbered dots", 0.65);
       await yieldToWorker();
       if (cancelled.has(requestId)) return;
-      const result = buildPuzzle(contourCache.contours, contourCache.width, contourCache.height, settings, Math.round(performance.now() - started));
+      const result = buildPuzzle(
+        contourCache.contours,
+        contourCache.width,
+        contourCache.height,
+        validated,
+        params,
+        Math.round(performance.now() - started),
+      );
       progress(requestId, "Checking path quality", 0.94);
       await yieldToWorker();
       if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
@@ -299,27 +315,25 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
       const combinedEdges = new cv.Mat();
       try {
         cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY);
-        const profile = settings.profile || "anime";
+        const focus = validated.processingFocus;
 
-        if (profile === "anime") {
+        if (focus === "anime") {
           // Anime profile:
           // 1. Bilateral filter preserves sharp ink line edges while smoothing flat cel-shading and skin tones
           try {
-            cv.bilateralFilter(gray, denoised, 5, 45, 45, cv.BORDER_DEFAULT);
+            cv.bilateralFilter(gray, denoised, 5, params.bilateralSigmaColor, params.bilateralSigmaSpace, cv.BORDER_DEFAULT);
           } catch {
-            const blurSigma = Math.max(0.4, 0.75 - settings.lineArtEnhancement * 0.04);
-            cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
+            cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), params.blurSigma, params.blurSigma, cv.BORDER_DEFAULT);
           }
 
-          // 2. Black Hat morphology isolates dark ink lines (eyes, eyelashes, hair, chin, clothing lines)
+          // 2. Black Hat morphology isolates dark ink lines (eyes, eyebrows, eyelashes, hair, chin, clothing lines)
           const lineKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
           const blackhat = new cv.Mat();
           cv.morphologyEx(denoised, blackhat, cv.MORPH_BLACKHAT, lineKernel);
           lineKernel.delete();
 
           const lineMask = new cv.Mat();
-          const lineThreshold = Math.max(12, 38 - settings.contourSensitivity * 2.4 - settings.fineDetail * 1.2);
-          cv.threshold(blackhat, lineMask, lineThreshold, 255, cv.THRESH_BINARY);
+          cv.threshold(blackhat, lineMask, params.blackhatThreshold, 255, cv.THRESH_BINARY);
           blackhat.delete();
 
           // 3. Morphological skeletonization ensures thin ink strokes are single centerlines
@@ -327,17 +341,21 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
           lineMask.delete();
 
           // 4. Clean Canny edges for outer boundaries and silhouettes
-          const low = Math.max(16, 90 - settings.contourSensitivity * 6.5 - settings.fineDetail * 1.5);
-          const high = Math.max(low + 24, 185 - settings.contourSensitivity * 7.5);
-          cv.Canny(denoised, edgeFine, low, high, 3, true);
+          cv.Canny(denoised, edgeFine, params.cannyLow, params.cannyHigh, 3, true);
 
           cv.bitwise_or(lineSkel, edgeFine, combinedEdges);
           lineSkel.delete();
 
           // 5. Adaptive threshold for secondary details
-          const block = Math.max(11, Math.min(31, 15 + 2 * Math.round(settings.fineDetail / 3))) | 1;
-          const constant = 5 + settings.backgroundSuppression * 0.45 - settings.contourSensitivity * 0.2;
-          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
+          cv.adaptiveThreshold(
+            denoised,
+            adaptive,
+            255,
+            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv.THRESH_BINARY_INV,
+            params.adaptiveBlockSize,
+            params.adaptiveC,
+          );
           const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
           const adaptiveClean = new cv.Mat();
           cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
@@ -360,32 +378,35 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
           if (cancelled.has(requestId)) return;
           progress(requestId, "Placing numbered dots", 0.77);
           await yieldToWorker();
-          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          const result = buildPuzzle(
+            raw,
+            width,
+            height,
+            validated,
+            params,
+            Math.round(performance.now() - started),
+          );
           progress(requestId, "Checking path quality", 0.94);
           await yieldToWorker();
           if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
-        } else if (profile === "lineart") {
+        } else if (focus === "lineart") {
           // Clean line art profile:
           // Binary centerline skeletonization to trace exact stroke middles without doubling contours
-          const blurSigma = Math.max(0.35, 0.6 - settings.lineArtEnhancement * 0.04);
+          const blurSigma = Math.max(0.35, params.blurSigma * 0.85);
           cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
 
           const bin = new cv.Mat();
-          const threshVal = Math.max(50, 175 - settings.contourSensitivity * 9);
+          const threshVal = Math.max(50, 175 - validated.contourSensitivity * 9);
           cv.threshold(denoised, bin, threshVal, 255, cv.THRESH_BINARY_INV);
 
           const skel = morphologicalSkeleton(cv, bin, 16);
           bin.delete();
 
-          const low = Math.max(20, 80 - settings.contourSensitivity * 5);
-          const high = Math.max(low + 30, 170 - settings.contourSensitivity * 6);
-          cv.Canny(denoised, edgeFine, low, high, 3, true);
-
+          cv.Canny(denoised, edgeFine, params.cannyLow, params.cannyHigh, 3, true);
           cv.bitwise_or(skel, edgeFine, combinedEdges);
           skel.delete();
 
-          const block = Math.max(13, Math.min(33, 17 + 2 * Math.round(settings.fineDetail / 3))) | 1;
-          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, block, 5);
+          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, params.adaptiveBlockSize, 5);
           const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
           const adaptiveClean = new cv.Mat();
           cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
@@ -408,27 +429,38 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
           if (cancelled.has(requestId)) return;
           progress(requestId, "Placing numbered dots", 0.77);
           await yieldToWorker();
-          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          const result = buildPuzzle(
+            raw,
+            width,
+            height,
+            validated,
+            params,
+            Math.round(performance.now() - started),
+          );
           progress(requestId, "Checking path quality", 0.94);
           await yieldToWorker();
           if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
-        } else if (profile === "photo") {
+        } else if (focus === "photo") {
           // Photograph profile:
           // Stronger bilateral smoothing to suppress texture noise while keeping true geometric edges
           try {
-            cv.bilateralFilter(gray, denoised, 7, 70, 70, cv.BORDER_DEFAULT);
+            cv.bilateralFilter(gray, denoised, 7, 75, 75, cv.BORDER_DEFAULT);
           } catch {
             cv.GaussianBlur(gray, denoised, new cv.Size(5, 5), 1.1, 1.1, cv.BORDER_DEFAULT);
           }
 
-          const low = Math.max(25, 105 - settings.contourSensitivity * 6.5);
-          const high = Math.max(low + 35, 205 - settings.contourSensitivity * 7.5);
-          cv.Canny(denoised, edgeFine, low, high, 3, true);
+          cv.Canny(denoised, edgeFine, params.cannyLow, params.cannyHigh, 3, true);
           edgeFine.copyTo(combinedEdges);
 
-          const block = Math.max(15, Math.min(35, 19 + 2 * Math.round(settings.fineDetail / 2))) | 1;
-          const constant = 7 + settings.backgroundSuppression * 0.55;
-          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
+          cv.adaptiveThreshold(
+            denoised,
+            adaptive,
+            255,
+            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv.THRESH_BINARY_INV,
+            params.adaptiveBlockSize,
+            params.adaptiveC,
+          );
           const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
           const adaptiveClean = new cv.Mat();
           cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
@@ -451,14 +483,20 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
           if (cancelled.has(requestId)) return;
           progress(requestId, "Placing numbered dots", 0.77);
           await yieldToWorker();
-          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          const result = buildPuzzle(
+            raw,
+            width,
+            height,
+            validated,
+            params,
+            Math.round(performance.now() - started),
+          );
           progress(requestId, "Checking path quality", 0.94);
           await yieldToWorker();
           if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
         } else {
           // Balanced profile
-          const blurSigma = Math.max(0.4, 0.75 - settings.lineArtEnhancement * 0.04);
-          cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
+          cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), params.blurSigma, params.blurSigma, cv.BORDER_DEFAULT);
 
           const lineKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
           const blackhat = new cv.Mat();
@@ -466,20 +504,22 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
           lineKernel.delete();
 
           const lineMask = new cv.Mat();
-          const lineThreshold = Math.max(14, 40 - settings.contourSensitivity * 2.6 - settings.fineDetail * 1.3);
-          cv.threshold(blackhat, lineMask, lineThreshold, 255, cv.THRESH_BINARY);
+          cv.threshold(blackhat, lineMask, params.blackhatThreshold, 255, cv.THRESH_BINARY);
           blackhat.delete();
 
-          const low = Math.max(16, 95 - settings.contourSensitivity * 6.5 - settings.fineDetail * 1.5);
-          const high = Math.max(low + 24, 195 - settings.contourSensitivity * 7.5);
-          cv.Canny(denoised, edgeFine, low, high, 3, true);
-
+          cv.Canny(denoised, edgeFine, params.cannyLow, params.cannyHigh, 3, true);
           cv.bitwise_or(lineMask, edgeFine, combinedEdges);
           lineMask.delete();
 
-          const block = Math.max(11, Math.min(31, 15 + 2 * Math.round(settings.fineDetail / 3))) | 1;
-          const constant = 5 + settings.backgroundSuppression * 0.45 - settings.contourSensitivity * 0.2;
-          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
+          cv.adaptiveThreshold(
+            denoised,
+            adaptive,
+            255,
+            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv.THRESH_BINARY_INV,
+            params.adaptiveBlockSize,
+            params.adaptiveC,
+          );
           const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
           const adaptiveClean = new cv.Mat();
           cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
@@ -502,7 +542,14 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
           if (cancelled.has(requestId)) return;
           progress(requestId, "Placing numbered dots", 0.77);
           await yieldToWorker();
-          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          const result = buildPuzzle(
+            raw,
+            width,
+            height,
+            validated,
+            params,
+            Math.round(performance.now() - started),
+          );
           progress(requestId, "Checking path quality", 0.94);
           await yieldToWorker();
           if (!cancelled.has(requestId)) send({ type: "result", requestId, result });

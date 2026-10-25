@@ -74,7 +74,7 @@ describe("contour analysis", () => {
   });
 
   it("limits the contour count so medium puzzles can allocate meaningful dots per path", () => {
-    expect(contourPathCap(DEFAULT_SETTINGS)).toBe(26);
+    expect(contourPathCap(DEFAULT_SETTINGS)).toBe(27);
     expect(contourPathCap({ ...DEFAULT_SETTINGS, dotBudget: 100, pathComplexity: 2, fineDetail: 3 })).toBeLessThan(15);
   });
 });

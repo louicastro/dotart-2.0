@@ -61,7 +61,14 @@ export function rankContourCandidates(
 ): RawContour[] {
   const diagonal = Math.hypot(width, height);
   const frameArea = width * height;
-  const maxSuppression = settings.backgroundSuppression / 10;
+  const suppressionRatio =
+    settings.backgroundSuppression <= 10
+      ? settings.backgroundSuppression / 10
+      : settings.backgroundSuppression / 100;
+  const detailRatio =
+    typeof settings.detailPreservation === "number"
+      ? settings.detailPreservation / 100
+      : (settings.fineDetail ?? 6) / 10;
   const scored: RawContour[] = [];
   for (const contour of contours) {
     // Suppress canvas frame borders (lines along the extreme edges of the image)
@@ -76,36 +83,43 @@ export function rankContourCandidates(
 
     const kind = classifyContour(contour, width, height);
 
-    // Minimum perimeter threshold: delicate facial features are allowed down to 7px,
-    // while distant background noise is suppressed
-    const minLength = kind === "facial" ? 7 : Math.max(10, 10 + settings.backgroundSuppression * 2.2);
+    // Minimum perimeter threshold: delicate facial features are protected down to 7px,
+    // while distant background noise is progressively suppressed based on suppressionRatio
+    const minLength = kind === "facial" ? 7 : Math.max(8, 7 + suppressionRatio * 22);
     if (contour.perimeter < minLength) continue;
-    if (relativeArea < 0.000012 + maxSuppression * 0.000025 && centrality < 0.62 && kind !== "facial") continue;
+    if (relativeArea < 0.00001 + suppressionRatio * 0.00025 && centrality < 0.60 && kind !== "facial") continue;
     if (relativeArea > 0.94 && contour.parent < 0) continue;
 
     const lineArtBoost = settings.lineArtEnhancement / 10;
-    const detailBoost = settings.fineDetail / 10;
     const parentBoost = contour.parent >= 0 ? 1.15 : 1;
     const sourceBoost = contour.source === "edge" ? 1.25 : 0.88;
     const sizeSignal = Math.min(12, (Math.sqrt(Math.max(0, contour.area)) / Math.max(1, diagonal)) * 30);
 
-    const semanticBoost = kind === "facial" ? 2.5 + detailBoost * 0.7
+    const semanticBoost = kind === "facial" ? 2.5 + detailRatio * 0.8
       : kind === "hair" ? 1.8 + lineArtBoost * 0.5
       : kind === "silhouette" ? 1.5
       : kind === "clothing" ? 1.35
       : 1;
 
+    let focus = "anime";
+    if (settings.processingFocus && settings.processingFocus !== "anime") {
+      focus = settings.processingFocus;
+    } else if (settings.profile && settings.profile !== "anime") {
+      focus = settings.profile;
+    } else {
+      focus = settings.processingFocus ?? settings.profile ?? "anime";
+    }
     const profileBoost =
-      settings.profile === "anime"
-        ? (kind === "facial" ? 1.3 : kind === "hair" ? 1.15 : 1.0)
-        : settings.profile === "lineart"
+      focus === "anime"
+        ? (kind === "facial" ? 1.4 : kind === "hair" ? 1.25 : 1.0)
+        : focus === "lineart"
         ? (contour.perimeter > 25 ? 1.25 : 1.0)
-        : settings.profile === "photo"
+        : focus === "photo"
         ? (kind === "silhouette" ? 1.4 : relativeArea < 0.001 ? 0.75 : 1.0)
         : 1.0;
 
     const peripheralPenalty = (cx < 0.035 || cx > 0.965 || cy < 0.025 || cy > 0.975) ? 0.68 : 1;
-    const backgroundPenalty = relativeArea < 0.0008 && centrality < 0.45 ? 1 - maxSuppression * 0.55 : 1;
+    const backgroundPenalty = relativeArea < 0.0008 && centrality < 0.45 ? Math.max(0.05, 1 - suppressionRatio * 0.75) : 1;
 
     const score = (Math.sqrt(contour.perimeter) * 2.2 + sizeSignal + centrality * 10)
       * parentBoost * sourceBoost * semanticBoost * profileBoost * peripheralPenalty * backgroundPenalty

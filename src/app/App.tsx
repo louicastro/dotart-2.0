@@ -9,7 +9,7 @@ import { cancelProcessing, processImage } from "../engine/client";
 import { longestSegmentInsertion, pathLength } from "../engine/geometry";
 import { pathMarker } from "../engine/numbering";
 import type { ImageMetadata, ProcessingSettings, PuzzlePath, PuzzleResult } from "../engine/types";
-import { DEFAULT_SETTINGS } from "../engine/types";
+import { DEFAULT_SETTINGS, validateSettings } from "../engine/types";
 import { DEFAULT_EXPORT_OPTIONS, buildPuzzleSvg, checkExportQuality, downloadBlob, exportPdf, exportPng, type ExportOptions } from "../export/exporter";
 import "../styles/app.css";
 
@@ -21,12 +21,13 @@ interface SelectedDot { pathId: string; dotId: string }
 
 function processingSignature(settings: ProcessingSettings): string {
   return [
+    settings.processingFocus,
     settings.profile,
+    settings.detailPreservation,
+    settings.backgroundSuppression,
+    settings.minimumSpacing,
     settings.dotBudget,
     settings.contourSensitivity,
-    settings.fineDetail,
-    settings.minSpacing,
-    settings.backgroundSuppression,
     settings.lineArtEnhancement,
     settings.pathComplexity,
     settings.closeContours,
@@ -176,10 +177,11 @@ export default function App() {
   const openSample = useCallback(() => setView("workspace"), []);
 
   const updateSettings = (next: ProcessingSettings) => {
+    const validated = validateSettings(next);
     setUndoStack((previous) => [...previous.slice(-39), settings]);
     setRedoStack([]);
-    setSettings(next);
-    if (isSample && processingSignature(settings) !== processingSignature(next)) setSampleResult(null);
+    setSettings(validated);
+    if (isSample && processingSignature(settings) !== processingSignature(validated)) setSampleResult(null);
   };
 
   const undo = () => {

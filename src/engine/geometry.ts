@@ -209,6 +209,7 @@ export function sampleAdaptiveDots(
   minSpacing: number,
   fineDetail: number,
   closed: boolean,
+  cornerThresholdOverride?: number,
 ): Point[] {
   const points: Point[] = [];
   for (const point of rawPoints) {
@@ -238,7 +239,10 @@ export function sampleAdaptiveDots(
   }
 
   const corners: Array<{ index: number; score: number }> = [];
-  const cornerThreshold = 0.30 + (10 - Math.max(0, Math.min(10, fineDetail))) * 0.05;
+  const cornerThreshold = typeof cornerThresholdOverride === "number"
+    ? cornerThresholdOverride
+    : 0.30 + (10 - Math.max(0, Math.min(10, fineDetail))) * 0.05;
+
   for (let i = closed ? 0 : 1; i < (closed ? points.length : points.length - 1); i += 1) {
     const score = localCurvature(points, i, closed, step);
     if (score >= cornerThreshold) {
@@ -252,7 +256,7 @@ export function sampleAdaptiveDots(
   corners.sort((a, b) => b.score - a.score);
 
   const candidates = new Set(uniform);
-  const cornerLimit = Math.max(0, Math.floor(target * (0.35 + fineDetail * 0.045)));
+  const cornerLimit = Math.max(0, Math.floor(target * (0.35 + (fineDetail / 10) * 0.45)));
   for (const corner of corners.slice(0, cornerLimit)) candidates.add(corner.index);
 
   const importance = (index: number) => {
@@ -264,10 +268,12 @@ export function sampleAdaptiveDots(
   const selected: number[] = [];
   for (const index of chosen) {
     if (selected.length >= target) break;
+    const isProtectedLandmark = (!closed && (index === 0 || index === points.length - 1))
+      || (localCurvature(points, index, closed, step) > 1.15);
     const farEnough = selected.every((existing) => {
       const direct = distance(points[index], points[existing]);
       const wrap = closed ? Math.min(direct, Math.max(0, total - Math.abs(cumulative[index] - cumulative[existing]))) : direct;
-      return wrap >= spacing || (!closed && (index === 0 || index === points.length - 1));
+      return wrap >= spacing || isProtectedLandmark;
     });
     if (farEnough || selected.length < minimum) selected.push(index);
   }
