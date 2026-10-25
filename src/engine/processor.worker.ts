@@ -6,12 +6,29 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from "./types";
-import { createDots, extractSingleStrokeIfThin, pathLength, ramerDouglasPeucker, sampleAdaptiveDots, type Point } from "./geometry";
+import {
+  createDots,
+  extractSingleStrokeIfThin,
+  orderPathsSpatially,
+  pathLength,
+  ramerDouglasPeucker,
+  sampleAdaptiveDots,
+  type Point,
+} from "./geometry";
 import { contourPathCap, deduplicateContours, rankContourCandidates, type RawContour } from "./contours";
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
 const cancelled = new Set<string>();
 let cvPromise: Promise<any> | undefined;
+
+interface ContourCacheEntry {
+  cacheKey: string;
+  width: number;
+  height: number;
+  contours: RawContour[];
+}
+
+let contourCache: ContourCacheEntry | null = null;
 
 function send(message: WorkerResponse): void {
   workerScope.postMessage(message);
@@ -50,6 +67,37 @@ function loadCv(): Promise<any> {
     })();
   }
   return cvPromise;
+}
+
+function morphologicalSkeleton(cv: any, binary: any, maxIterations = 15): any {
+  const skel = new cv.Mat(binary.rows, binary.cols, cv.CV_8UC1, new cv.Scalar(0));
+  const temp = new cv.Mat();
+  const eroded = new cv.Mat();
+  const element = cv.getStructuringElement(cv.MORPH_CROSS, new cv.Size(3, 3));
+  let done = false;
+  let copy = binary.clone();
+  let iterations = 0;
+
+  try {
+    while (!done && iterations < maxIterations) {
+      iterations += 1;
+      cv.morphologyEx(copy, temp, cv.MORPH_OPEN, element);
+      cv.bitwise_not(temp, temp);
+      cv.bitwise_and(copy, temp, temp);
+      cv.bitwise_or(skel, temp, skel);
+      cv.erode(copy, eroded, element);
+      copy.delete();
+      copy = eroded.clone();
+
+      if (cv.countNonZero(copy) === 0) done = true;
+    }
+    return skel;
+  } finally {
+    copy.delete();
+    temp.delete();
+    eroded.delete();
+    element.delete();
+  }
 }
 
 function collectContours(cv: any, source: any, sourceType: "edge" | "adaptive"): RawContour[] {
@@ -100,6 +148,45 @@ function collectContours(cv: any, source: any, sourceType: "edge" | "adaptive"):
   }
 }
 
+function buildSinglePath(
+  contour: RawContour,
+  targetDots: number,
+  settings: ProcessingSettings,
+  pathId: string,
+): PuzzlePath | null {
+  const unrolled = extractSingleStrokeIfThin(contour.points);
+  const strokePoints = unrolled || contour.points;
+  const isClosed = !unrolled && settings.closeContours && contour.points.length >= 6 && contour.area > Math.max(8, contour.perimeter * 0.06);
+
+  const length = pathLength(strokePoints, isClosed);
+  if (length < 8) return null;
+  const target = Math.min(targetDots, settings.dotBudget, strokePoints.length);
+
+  const epsilon = Math.max(0.4, Math.min(1.4, 0.45 + (10 - settings.fineDetail) * 0.08));
+  let simplified = ramerDouglasPeucker(strokePoints, epsilon, isClosed);
+  const minimum = isClosed ? 6 : 2;
+  if (simplified.length < minimum) simplified = strokePoints;
+
+  const sampled = sampleAdaptiveDots(
+    simplified,
+    Math.max(minimum, target),
+    settings.minSpacing * (1.08 - settings.fineDetail * 0.025),
+    settings.fineDetail,
+    isClosed,
+  );
+  if (sampled.length < minimum) return null;
+
+  return {
+    id: pathId,
+    kind: contour.kind,
+    points: createDots(pathId, sampled),
+    closed: isClosed,
+    area: isClosed ? contour.area : 0,
+    perimeter: isClosed ? contour.perimeter : length,
+    score: contour.score,
+  };
+}
+
 function buildPuzzle(
   contours: RawContour[],
   width: number,
@@ -123,42 +210,22 @@ function buildPuzzle(
     pathTargets[i] += 1;
     assigned += 1;
   }
-  const paths: PuzzlePath[] = [];
+  const rawPaths: PuzzlePath[] = [];
   usable.forEach((contour, index) => {
-    // Detect if this contour is an open stroke doubled-back around a 1-2px edge line
-    const unrolled = extractSingleStrokeIfThin(contour.points);
-    const strokePoints = unrolled || contour.points;
-    const isClosed = !unrolled && settings.closeContours && contour.points.length >= 6 && contour.area > Math.max(8, contour.perimeter * 0.06);
+    const id = `path-${String(rawPaths.length + 1).padStart(2, "0")}`;
+    const p = buildSinglePath(contour, pathTargets[index], settings, id);
+    if (p) rawPaths.push(p);
+  });
 
-    const length = pathLength(strokePoints, isClosed);
-    if (length < 9) return;
-    const target = Math.min(pathTargets[index], settings.dotBudget, strokePoints.length);
+  const paths = orderPathsSpatially(rawPaths);
 
-    // Fine-grained smoothing tolerance removes 1px staircase raster quantization
-    // while faithfully preserving all true curves, corners, and contours
-    const epsilon = Math.max(0.4, Math.min(1.4, 0.45 + (10 - settings.fineDetail) * 0.08));
-    let simplified = ramerDouglasPeucker(strokePoints, epsilon, isClosed);
-    const minimum = isClosed ? 6 : 2;
-    if (simplified.length < minimum) simplified = strokePoints;
-
-    const sampled = sampleAdaptiveDots(
-      simplified,
-      Math.max(minimum, target),
-      settings.minSpacing * (1.08 - settings.fineDetail * 0.025),
-      settings.fineDetail,
-      isClosed,
-    );
-    if (sampled.length < minimum) return;
-    const id = `path-${String(paths.length + 1).padStart(2, "0")}`;
-    paths.push({
-      id,
-      kind: contour.kind,
-      points: createDots(id, sampled),
-      closed: isClosed,
-      area: isClosed ? contour.area : 0,
-      perimeter: isClosed ? contour.perimeter : length,
-      score: contour.score,
-    });
+  // Keep top 30 suppressed candidates for restoration
+  const suppressedContours = viable.slice(usable.length, usable.length + 30);
+  const suppressedPaths: PuzzlePath[] = [];
+  suppressedContours.forEach((contour, index) => {
+    const id = `suppressed-${String(index + 1).padStart(2, "0")}`;
+    const p = buildSinglePath(contour, Math.max(settings.closeContours ? 6 : 2, 8), settings, id);
+    if (p) suppressedPaths.push(p);
   });
 
   const totalDots = paths.reduce((sum, path) => sum + path.points.length, 0);
@@ -172,7 +239,7 @@ function buildPuzzle(
   if (ranked.length > paths.length * 2) {
     warnings.push({ code: "background-noise", message: `${ranked.length - paths.length} low-priority contour candidates were suppressed.`, count: ranked.length - paths.length });
   }
-  return { width, height, paths, totalDots, processingMs, engine: "opencv", warnings, contourCount: ranked.length };
+  return { width, height, paths, suppressedPaths, totalDots, processingMs, engine: "opencv", warnings, contourCount: ranked.length };
 }
 
 async function runProcess(request: Extract<WorkerRequest, { type: "process" }>): Promise<void> {
@@ -180,6 +247,29 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
   const { requestId, file, settings } = request;
   try {
     if (cancelled.has(requestId)) return;
+
+    // Check intermediate cache: if image and edge-detection parameters match, reuse raw contours
+    const cacheKey = [
+      file.name,
+      file.size,
+      file.lastModified,
+      settings.profile,
+      settings.contourSensitivity,
+      settings.lineArtEnhancement,
+      settings.backgroundSuppression,
+    ].join("|");
+
+    if (contourCache && contourCache.cacheKey === cacheKey) {
+      progress(requestId, "Placing numbered dots", 0.65);
+      await yieldToWorker();
+      if (cancelled.has(requestId)) return;
+      const result = buildPuzzle(contourCache.contours, contourCache.width, contourCache.height, settings, Math.round(performance.now() - started));
+      progress(requestId, "Checking path quality", 0.94);
+      await yieldToWorker();
+      if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
+      return;
+    }
+
     progress(requestId, "Preparing image", 0.04);
     await yieldToWorker();
     if (cancelled.has(requestId)) return;
@@ -209,56 +299,214 @@ async function runProcess(request: Extract<WorkerRequest, { type: "process" }>):
       const combinedEdges = new cv.Mat();
       try {
         cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY);
+        const profile = settings.profile || "anime";
 
-        // 1. Denoising: gentle Gaussian smoothing preserves sharp line-art edges
-        const blurSigma = Math.max(0.4, 0.75 - settings.lineArtEnhancement * 0.04);
-        cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
+        if (profile === "anime") {
+          // Anime profile:
+          // 1. Bilateral filter preserves sharp ink line edges while smoothing flat cel-shading and skin tones
+          try {
+            cv.bilateralFilter(gray, denoised, 5, 45, 45, cv.BORDER_DEFAULT);
+          } catch {
+            const blurSigma = Math.max(0.4, 0.75 - settings.lineArtEnhancement * 0.04);
+            cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
+          }
 
-        // 2. Black Hat morphology isolates dark ink lines (eyes, eyelashes, hair, chin, clothing lines)
-        // from flat skin tones, cel shading, and soft color gradients
-        const lineKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-        const blackhat = new cv.Mat();
-        cv.morphologyEx(denoised, blackhat, cv.MORPH_BLACKHAT, lineKernel);
-        lineKernel.delete();
+          // 2. Black Hat morphology isolates dark ink lines (eyes, eyelashes, hair, chin, clothing lines)
+          const lineKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+          const blackhat = new cv.Mat();
+          cv.morphologyEx(denoised, blackhat, cv.MORPH_BLACKHAT, lineKernel);
+          lineKernel.delete();
 
-        const lineMask = new cv.Mat();
-        const lineThreshold = Math.max(14, 40 - settings.contourSensitivity * 2.6 - settings.fineDetail * 1.3);
-        cv.threshold(blackhat, lineMask, lineThreshold, 255, cv.THRESH_BINARY);
-        blackhat.delete();
+          const lineMask = new cv.Mat();
+          const lineThreshold = Math.max(12, 38 - settings.contourSensitivity * 2.4 - settings.fineDetail * 1.2);
+          cv.threshold(blackhat, lineMask, lineThreshold, 255, cv.THRESH_BINARY);
+          blackhat.delete();
 
-        // 3. Clean Canny edges for outer boundaries and silhouettes without edge-shifting coarse blurs
-        const low = Math.max(16, 95 - settings.contourSensitivity * 6.5 - settings.fineDetail * 1.5);
-        const high = Math.max(low + 24, 195 - settings.contourSensitivity * 7.5);
-        cv.Canny(denoised, edgeFine, low, high, 3, true);
+          // 3. Morphological skeletonization ensures thin ink strokes are single centerlines
+          const lineSkel = morphologicalSkeleton(cv, lineMask, 8);
+          lineMask.delete();
 
-        // 4. Combine line art ink strokes with clean silhouette edges
-        cv.bitwise_or(lineMask, edgeFine, combinedEdges);
-        lineMask.delete();
+          // 4. Clean Canny edges for outer boundaries and silhouettes
+          const low = Math.max(16, 90 - settings.contourSensitivity * 6.5 - settings.fineDetail * 1.5);
+          const high = Math.max(low + 24, 185 - settings.contourSensitivity * 7.5);
+          cv.Canny(denoised, edgeFine, low, high, 3, true);
 
-        // 5. Adaptive threshold used to capture secondary details, cleaned to avoid cel-shading noise
-        const block = Math.max(11, Math.min(31, 15 + 2 * Math.round(settings.fineDetail / 3))) | 1;
-        const constant = 5 + settings.backgroundSuppression * 0.45 - settings.contourSensitivity * 0.2;
-        cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
-        const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-        const adaptiveClean = new cv.Mat();
-        cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
-        cleanKernel.delete();
+          cv.bitwise_or(lineSkel, edgeFine, combinedEdges);
+          lineSkel.delete();
 
-        if (cancelled.has(requestId)) return;
-        progress(requestId, "Following contour paths", 0.57);
-        await yieldToWorker();
-        const raw = [
-          ...collectContours(cv, combinedEdges, "edge"),
-          ...collectContours(cv, adaptiveClean, "adaptive"),
-        ];
-        adaptiveClean.delete();
-        if (cancelled.has(requestId)) return;
-        progress(requestId, "Placing numbered dots", 0.77);
-        await yieldToWorker();
-        const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
-        progress(requestId, "Checking path quality", 0.94);
-        await yieldToWorker();
-        if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
+          // 5. Adaptive threshold for secondary details
+          const block = Math.max(11, Math.min(31, 15 + 2 * Math.round(settings.fineDetail / 3))) | 1;
+          const constant = 5 + settings.backgroundSuppression * 0.45 - settings.contourSensitivity * 0.2;
+          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
+          const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const adaptiveClean = new cv.Mat();
+          cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
+          cleanKernel.delete();
+
+          if (cancelled.has(requestId)) {
+            adaptiveClean.delete();
+            return;
+          }
+          progress(requestId, "Following contour paths", 0.57);
+          await yieldToWorker();
+          const raw = [
+            ...collectContours(cv, combinedEdges, "edge"),
+            ...collectContours(cv, adaptiveClean, "adaptive"),
+          ];
+          adaptiveClean.delete();
+
+          contourCache = { cacheKey, width, height, contours: raw };
+
+          if (cancelled.has(requestId)) return;
+          progress(requestId, "Placing numbered dots", 0.77);
+          await yieldToWorker();
+          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          progress(requestId, "Checking path quality", 0.94);
+          await yieldToWorker();
+          if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
+        } else if (profile === "lineart") {
+          // Clean line art profile:
+          // Binary centerline skeletonization to trace exact stroke middles without doubling contours
+          const blurSigma = Math.max(0.35, 0.6 - settings.lineArtEnhancement * 0.04);
+          cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
+
+          const bin = new cv.Mat();
+          const threshVal = Math.max(50, 175 - settings.contourSensitivity * 9);
+          cv.threshold(denoised, bin, threshVal, 255, cv.THRESH_BINARY_INV);
+
+          const skel = morphologicalSkeleton(cv, bin, 16);
+          bin.delete();
+
+          const low = Math.max(20, 80 - settings.contourSensitivity * 5);
+          const high = Math.max(low + 30, 170 - settings.contourSensitivity * 6);
+          cv.Canny(denoised, edgeFine, low, high, 3, true);
+
+          cv.bitwise_or(skel, edgeFine, combinedEdges);
+          skel.delete();
+
+          const block = Math.max(13, Math.min(33, 17 + 2 * Math.round(settings.fineDetail / 3))) | 1;
+          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, block, 5);
+          const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const adaptiveClean = new cv.Mat();
+          cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
+          cleanKernel.delete();
+
+          if (cancelled.has(requestId)) {
+            adaptiveClean.delete();
+            return;
+          }
+          progress(requestId, "Following contour paths", 0.57);
+          await yieldToWorker();
+          const raw = [
+            ...collectContours(cv, combinedEdges, "edge"),
+            ...collectContours(cv, adaptiveClean, "adaptive"),
+          ];
+          adaptiveClean.delete();
+
+          contourCache = { cacheKey, width, height, contours: raw };
+
+          if (cancelled.has(requestId)) return;
+          progress(requestId, "Placing numbered dots", 0.77);
+          await yieldToWorker();
+          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          progress(requestId, "Checking path quality", 0.94);
+          await yieldToWorker();
+          if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
+        } else if (profile === "photo") {
+          // Photograph profile:
+          // Stronger bilateral smoothing to suppress texture noise while keeping true geometric edges
+          try {
+            cv.bilateralFilter(gray, denoised, 7, 70, 70, cv.BORDER_DEFAULT);
+          } catch {
+            cv.GaussianBlur(gray, denoised, new cv.Size(5, 5), 1.1, 1.1, cv.BORDER_DEFAULT);
+          }
+
+          const low = Math.max(25, 105 - settings.contourSensitivity * 6.5);
+          const high = Math.max(low + 35, 205 - settings.contourSensitivity * 7.5);
+          cv.Canny(denoised, edgeFine, low, high, 3, true);
+          edgeFine.copyTo(combinedEdges);
+
+          const block = Math.max(15, Math.min(35, 19 + 2 * Math.round(settings.fineDetail / 2))) | 1;
+          const constant = 7 + settings.backgroundSuppression * 0.55;
+          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
+          const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const adaptiveClean = new cv.Mat();
+          cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
+          cleanKernel.delete();
+
+          if (cancelled.has(requestId)) {
+            adaptiveClean.delete();
+            return;
+          }
+          progress(requestId, "Following contour paths", 0.57);
+          await yieldToWorker();
+          const raw = [
+            ...collectContours(cv, combinedEdges, "edge"),
+            ...collectContours(cv, adaptiveClean, "adaptive"),
+          ];
+          adaptiveClean.delete();
+
+          contourCache = { cacheKey, width, height, contours: raw };
+
+          if (cancelled.has(requestId)) return;
+          progress(requestId, "Placing numbered dots", 0.77);
+          await yieldToWorker();
+          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          progress(requestId, "Checking path quality", 0.94);
+          await yieldToWorker();
+          if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
+        } else {
+          // Balanced profile
+          const blurSigma = Math.max(0.4, 0.75 - settings.lineArtEnhancement * 0.04);
+          cv.GaussianBlur(gray, denoised, new cv.Size(3, 3), blurSigma, blurSigma, cv.BORDER_DEFAULT);
+
+          const lineKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+          const blackhat = new cv.Mat();
+          cv.morphologyEx(denoised, blackhat, cv.MORPH_BLACKHAT, lineKernel);
+          lineKernel.delete();
+
+          const lineMask = new cv.Mat();
+          const lineThreshold = Math.max(14, 40 - settings.contourSensitivity * 2.6 - settings.fineDetail * 1.3);
+          cv.threshold(blackhat, lineMask, lineThreshold, 255, cv.THRESH_BINARY);
+          blackhat.delete();
+
+          const low = Math.max(16, 95 - settings.contourSensitivity * 6.5 - settings.fineDetail * 1.5);
+          const high = Math.max(low + 24, 195 - settings.contourSensitivity * 7.5);
+          cv.Canny(denoised, edgeFine, low, high, 3, true);
+
+          cv.bitwise_or(lineMask, edgeFine, combinedEdges);
+          lineMask.delete();
+
+          const block = Math.max(11, Math.min(31, 15 + 2 * Math.round(settings.fineDetail / 3))) | 1;
+          const constant = 5 + settings.backgroundSuppression * 0.45 - settings.contourSensitivity * 0.2;
+          cv.adaptiveThreshold(denoised, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, block, constant);
+          const cleanKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const adaptiveClean = new cv.Mat();
+          cv.morphologyEx(adaptive, adaptiveClean, cv.MORPH_OPEN, cleanKernel);
+          cleanKernel.delete();
+
+          if (cancelled.has(requestId)) {
+            adaptiveClean.delete();
+            return;
+          }
+          progress(requestId, "Following contour paths", 0.57);
+          await yieldToWorker();
+          const raw = [
+            ...collectContours(cv, combinedEdges, "edge"),
+            ...collectContours(cv, adaptiveClean, "adaptive"),
+          ];
+          adaptiveClean.delete();
+
+          contourCache = { cacheKey, width, height, contours: raw };
+
+          if (cancelled.has(requestId)) return;
+          progress(requestId, "Placing numbered dots", 0.77);
+          await yieldToWorker();
+          const result = buildPuzzle(raw, width, height, settings, Math.round(performance.now() - started));
+          progress(requestId, "Checking path quality", 0.94);
+          await yieldToWorker();
+          if (!cancelled.has(requestId)) send({ type: "result", requestId, result });
+        }
       } finally {
         source.delete();
         gray.delete();

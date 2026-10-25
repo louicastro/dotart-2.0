@@ -1,8 +1,20 @@
 export type Difficulty = "easy" | "medium" | "detailed" | "extreme" | "custom";
 export type PathMode = "multi" | "continuous";
-export type ContourKind = "silhouette" | "facial" | "hair" | "clothing" | "object" | "detail";
+export type ProcessingProfile = "anime" | "lineart" | "photo" | "balanced";
+export type ContourKind =
+  | "silhouette"
+  | "primary-contour"
+  | "secondary-contour"
+  | "fine-detail"
+  | "accent"
+  | "facial"
+  | "hair"
+  | "clothing"
+  | "object"
+  | "detail";
 
 export interface ProcessingSettings {
+  profile: ProcessingProfile;
   difficulty: Difficulty;
   dotBudget: number;
   contourSensitivity: number;
@@ -46,6 +58,7 @@ export interface PuzzleResult {
   width: number;
   height: number;
   paths: PuzzlePath[];
+  suppressedPaths?: PuzzlePath[];
   totalDots: number;
   processingMs: number;
   engine: "opencv";
@@ -97,6 +110,7 @@ export interface WorkerErrorMessage {
 export type WorkerResponse = WorkerProgressMessage | WorkerResultMessage | WorkerErrorMessage;
 
 export const DEFAULT_SETTINGS: ProcessingSettings = {
+  profile: "anime",
   difficulty: "medium",
   dotBudget: 240,
   contourSensitivity: 5,
@@ -111,6 +125,29 @@ export const DEFAULT_SETTINGS: ProcessingSettings = {
   printScale: 100,
   pathMode: "multi",
   closeContours: true,
+};
+
+export const PROCESSING_PROFILES: Record<ProcessingProfile, { label: string; badge: string; description: string }> = {
+  anime: {
+    label: "Anime & Manga",
+    badge: "Anime",
+    description: "Bilateral gradient smoothing with Black Hat morphology to isolate crisp character ink strokes.",
+  },
+  lineart: {
+    label: "Clean Line Art",
+    badge: "Line Art",
+    description: "Binary centerline skeletonization to trace exact stroke middles without doubling contours.",
+  },
+  photo: {
+    label: "Photograph",
+    badge: "Photo",
+    description: "Adaptive multi-scale edge filtering with texture noise suppression for realistic subjects.",
+  },
+  balanced: {
+    label: "Balanced",
+    badge: "Balanced",
+    description: "General-purpose edge extraction and adaptive contour sampling for diverse illustrations.",
+  },
 };
 
 export const DIFFICULTY_PRESETS: Record<Exclude<Difficulty, "custom">, { label: string; range: string; dots: number }> = {

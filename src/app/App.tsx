@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, ArrowLeft, Check, ChevronRight, Eye, EyeOff, FileDown, Image as ImageIcon, Info, LoaderCircle, Redo2, RotateCcw, ScanLine, ShieldCheck, SlidersHorizontal, Undo2, X } from "lucide-react";
+import { Activity, ArrowLeft, Check, ChevronDown, ChevronRight, Eye, EyeOff, FileDown, Image as ImageIcon, Info, LoaderCircle, Redo2, RotateCcw, ScanLine, ShieldCheck, SlidersHorizontal, Undo2, X } from "lucide-react";
 import CanvasEditor from "../components/CanvasEditor";
 import ExportPanel from "../components/ExportPanel";
 import SampleGallery, { SAMPLE_IMAGE_URL } from "../components/SampleGallery";
@@ -20,8 +20,17 @@ type View = "landing" | "workspace";
 interface SelectedDot { pathId: string; dotId: string }
 
 function processingSignature(settings: ProcessingSettings): string {
-  return [settings.dotBudget, settings.contourSensitivity, settings.fineDetail, settings.minSpacing,
-    settings.backgroundSuppression, settings.lineArtEnhancement, settings.pathComplexity, settings.closeContours].join("|");
+  return [
+    settings.profile,
+    settings.dotBudget,
+    settings.contourSensitivity,
+    settings.fineDetail,
+    settings.minSpacing,
+    settings.backgroundSuppression,
+    settings.lineArtEnhancement,
+    settings.pathComplexity,
+    settings.closeContours,
+  ].join("|");
 }
 
 function makePreviewUrl(result: PuzzleResult, settings: ProcessingSettings): string {
@@ -256,6 +265,71 @@ export default function App() {
     setSelectedDot(null);
   };
 
+  const deleteSelectedPath = () => {
+    if (!result || !selectedPathId) return;
+    const pathToDelete = result.paths.find((p) => p.id === selectedPathId);
+    if (!pathToDelete) return;
+    setResult((current) => {
+      if (!current) return current;
+      const paths = current.paths.filter((p) => p.id !== selectedPathId);
+      const suppressedPaths = [pathToDelete, ...(current.suppressedPaths || [])];
+      const totalDots = paths.reduce((count, p) => count + p.points.length, 0);
+      return { ...current, paths, suppressedPaths, totalDots };
+    });
+    setSelectedPathId(null);
+    setSelectedDot(null);
+  };
+
+  const reversePathDirection = () => {
+    if (!result || !selectedPathId) return;
+    updateManualPath(selectedPathId, (existing) => {
+      const reversed = existing.points.slice().reverse().map((dot, idx) => ({ ...dot, index: idx + 1 }));
+      return { ...existing, points: reversed };
+    });
+  };
+
+  const filterNoisePaths = () => {
+    if (!result) return;
+    const minPerimeter = 22;
+    const kept: PuzzlePath[] = [];
+    const removed: PuzzlePath[] = [];
+    result.paths.forEach((p) => {
+      if (p.perimeter < minPerimeter || p.points.length < 3) {
+        removed.push(p);
+      } else {
+        kept.push(p);
+      }
+    });
+    if (!removed.length) return;
+    setResult((current) => {
+      if (!current) return current;
+      const totalDots = kept.reduce((count, p) => count + p.points.length, 0);
+      return {
+        ...current,
+        paths: kept,
+        suppressedPaths: [...removed, ...(current.suppressedPaths || [])],
+        totalDots,
+      };
+    });
+    if (selectedPathId && removed.some((p) => p.id === selectedPathId)) {
+      setSelectedPathId(kept[0]?.id ?? null);
+    }
+  };
+
+  const restorePath = (pathId: string) => {
+    if (!result || !result.suppressedPaths) return;
+    const toRestore = result.suppressedPaths.find((p) => p.id === pathId);
+    if (!toRestore) return;
+    setResult((current) => {
+      if (!current) return current;
+      const suppressedPaths = current.suppressedPaths?.filter((p) => p.id !== pathId) || [];
+      const paths = [...current.paths, toRestore];
+      const totalDots = paths.reduce((count, p) => count + p.points.length, 0);
+      return { ...current, paths, suppressedPaths, totalDots };
+    });
+    setSelectedPathId(toRestore.id);
+  };
+
   const exportFile = async (kind: "pdf" | "png") => {
     if (!result) return;
     if (processing || dirty) {
@@ -365,9 +439,88 @@ export default function App() {
         <aside className="right-rail">
           <section className="panel image-info-panel"><div className="panel-heading"><div><span className="eyebrow">Image & path inspector</span><h2>Structure</h2></div><Activity size={16} className="muted-icon" /></div>
             {metadata ? <div className="image-info-grid"><span>Source</span><strong title={metadata.name}>{metadata.name}</strong><span>Dimensions</span><strong>{metadata.width} × {metadata.height} px</strong><span>Detected</span><strong>{result?.contourCount ?? "—"} contour candidates</strong><span>Processing</span><strong>{result ? `${result.processingMs} ms · local` : processing ? "In progress" : "Waiting"}</strong></div> : <p className="panel-empty-copy">Image dimensions and contour statistics will appear here.</p>}
-            <div className="path-list-header"><span>ORDERED PATHS</span><span>{result?.paths.length ?? 0}</span></div>
+            <div className="path-list-header">
+              <span>ORDERED PATHS</span>
+              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <span>{result?.paths.length ?? 0}</span>
+                <button
+                  type="button"
+                  onClick={filterNoisePaths}
+                  title="Remove small noise fragments (<22px perimeter)"
+                  disabled={!result || result.paths.length === 0}
+                  style={{
+                    fontSize: "8px",
+                    padding: "2px 6px",
+                    background: "#f4f1e8",
+                    border: "1px solid #ddd8cc",
+                    borderRadius: "3px",
+                    cursor: "pointer",
+                    color: "#555",
+                  }}
+                >
+                  Clean noise
+                </button>
+              </div>
+            </div>
             <div className="path-list">{result?.paths.slice(0, 60).map((path, index) => <button key={path.id} type="button" className={`path-row${path.id === selectedPathId ? " active" : ""}`} onClick={() => setSelectedPathId(path.id)}><span className="path-marker">{pathMarker(index)}</span><span className="path-name"><strong>{path.kind}</strong><small>{path.closed ? "Closed contour" : "Open contour"} · {Math.round(pathLength(path.points, path.closed))} px</small></span><span className="path-dot-count">{path.points.length}</span></button>)}{result && result.paths.length > 60 && <p className="path-list-overflow">Showing first 60 of {result.paths.length}; all paths remain in the canvas and exports.</p>}{result?.paths.length === 0 && <p className="panel-empty-copy">No strong contours yet. Raise sensitivity or reduce background suppression.</p>}</div>
-            {selectedPath && <div className="selected-path-detail"><span className="section-label">SELECTED · {selectedPath.kind.toUpperCase()}</span><strong>{selectedPath.points.length} ordered dots</strong><span>Start marker {pathMarker(Math.max(0, result?.paths.findIndex((path) => path.id === selectedPath.id) ?? 0))} · {selectedPath.closed ? "Controlled closure" : "Open path"}</span><button type="button" className={`button ${editingDots ? "button-accent" : "button-light"}`} onClick={() => setEditingDots((active) => !active)}>{editingDots ? "Done editing dots" : "Edit dots manually"}</button>{editingDots && <div className="manual-edit-row"><button type="button" onClick={addDot} title="Add a dot at the longest segment of this path">+ Add dot</button><button type="button" onClick={removeDot} disabled={!selectedDotValue || selectedPath.points.length <= (selectedPath.closed ? 4 : 2)} title="Remove the selected dot">− Remove selected</button></div>}</div>}
+            {selectedPath && (
+              <div className="selected-path-detail">
+                <span className="section-label">SELECTED · {selectedPath.kind.toUpperCase()}</span>
+                <strong>{selectedPath.points.length} ordered dots</strong>
+                <span>
+                  Start marker {pathMarker(Math.max(0, result?.paths.findIndex((path) => path.id === selectedPath.id) ?? 0))} · {selectedPath.closed ? "Controlled closure" : "Open path"}
+                </span>
+                <div className="path-tool-strip">
+                  <button type="button" onClick={reversePathDirection} title="Reverse numbering and connection direction">
+                    ⇄ Reverse flow
+                  </button>
+                  <button type="button" className="danger-tool" onClick={deleteSelectedPath} title="Delete this noise path">
+                    ✕ Delete path
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className={`button ${editingDots ? "button-accent" : "button-light"}`}
+                  onClick={() => setEditingDots((active) => !active)}
+                  style={{ marginTop: "8px" }}
+                >
+                  {editingDots ? "Done editing dots" : "Edit dots manually"}
+                </button>
+                {editingDots && (
+                  <div className="manual-edit-row">
+                    <button type="button" onClick={addDot} title="Add a dot at the longest segment of this path">
+                      + Add dot
+                    </button>
+                    <button
+                      type="button"
+                      onClick={removeDot}
+                      disabled={!selectedDotValue || selectedPath.points.length <= (selectedPath.closed ? 4 : 2)}
+                      title="Remove the selected dot"
+                    >
+                      − Remove selected
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {result && result.suppressedPaths && result.suppressedPaths.length > 0 && (
+              <details className="advanced-details" style={{ marginTop: "12px" }}>
+                <summary>
+                  <span>Restorable paths ({result.suppressedPaths.length})</span>
+                  <ChevronDown size={14} />
+                </summary>
+                <div className="suppressed-list">
+                  {result.suppressedPaths.slice(0, 15).map((sup) => (
+                    <div key={sup.id} className="suppressed-row">
+                      <span>{sup.kind} · {Math.round(sup.perimeter)}px · {sup.points.length} dots</span>
+                      <button type="button" className="suppressed-restore-btn" onClick={() => restorePath(sup.id)}>
+                        + Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </section>
 
           <ExportPanel options={exportOptions} onChange={setExportOptions} onPdf={() => void exportFile("pdf")} onPng={() => void exportFile("png")} result={result ?? { width: 1, height: 1, paths: [], totalDots: 0, processingMs: 0, engine: "opencv", warnings: [], contourCount: 0 }} disabled={!result || processing || dirty || exporting} />

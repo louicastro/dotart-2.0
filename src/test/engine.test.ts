@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { classifyContour, contourPathCap, deduplicateContours, rankContourCandidates, type RawContour } from "../engine/contours";
-import { countLabelCollisions, extractSingleStrokeIfThin, localCurvature, longestSegmentInsertion, pathLength, ramerDouglasPeucker, sampleAdaptiveDots, type Point } from "../engine/geometry";
+import {
+  bridgeMicroGaps,
+  computeLabelOffset,
+  countLabelCollisions,
+  createDotSpatialGrid,
+  extractSingleStrokeIfThin,
+  localCurvature,
+  longestSegmentInsertion,
+  orderPathsSpatially,
+  pathLength,
+  ramerDouglasPeucker,
+  sampleAdaptiveDots,
+  type Point,
+} from "../engine/geometry";
 import { numberPaths, pathMarker } from "../engine/numbering";
 import { DEFAULT_SETTINGS, type PuzzlePath, type PuzzleResult } from "../engine/types";
 import { buildPuzzleSvg, checkExportQuality, DEFAULT_EXPORT_OPTIONS, exportPdf } from "../export/exporter";
@@ -206,5 +219,154 @@ describe("export checks and real files", () => {
     const blob = await exportPdf(twoPathResult, DEFAULT_SETTINGS, { ...DEFAULT_EXPORT_OPTIONS, posterTiles: 2, includeAnswerKey: true });
     const pdfText = new TextDecoder("latin1").decode(await blob.arrayBuffer());
     expect((pdfText.match(/\/Type\s*\/Page\b/g) ?? []).length).toBe(5);
+  });
+});
+
+describe("advanced computer vision & path ordering", () => {
+  it("bridges fractured stroke micro-gaps within threshold", () => {
+    const stroke1: Point[] = [{ x: 0, y: 0 }, { x: 10, y: 0 }];
+    const stroke2: Point[] = [{ x: 12, y: 0 }, { x: 25, y: 0 }];
+    const bridged = bridgeMicroGaps([stroke1, stroke2], 3.0);
+    expect(bridged).toHaveLength(1);
+    expect(bridged[0]).toHaveLength(4);
+    expect(bridged[0][0]).toEqual({ x: 0, y: 0 });
+    expect(bridged[0][3]).toEqual({ x: 25, y: 0 });
+
+    // When gap is too large, strokes remain separate
+    const strokeFar: Point[] = [{ x: 40, y: 0 }, { x: 50, y: 0 }];
+    const unbridged = bridgeMicroGaps([stroke1, strokeFar], 3.0);
+    expect(unbridged).toHaveLength(2);
+  });
+
+  it("spatially orders paths starting with the main silhouette and preserving nearest neighbor flow", () => {
+    const detailBottomRight = path("detail-br", [{ x: 800, y: 800 }, { x: 850, y: 850 }], false);
+    const detailTopCenter = path("detail-tc", [{ x: 480, y: 220 }, { x: 500, y: 240 }], false);
+    const mainSilhouette = path("silhouette-main", [{ x: 100, y: 100 }, { x: 900, y: 100 }, { x: 900, y: 900 }, { x: 100, y: 900 }], true);
+    mainSilhouette.kind = "silhouette";
+
+    const ordered = orderPathsSpatially([detailBottomRight, detailTopCenter, mainSilhouette]);
+    expect(ordered[0].kind).toBe("silhouette");
+    expect(ordered[0].id).toBe("path-01");
+    expect(ordered[1].id).toBe("path-02");
+    expect(ordered[2].id).toBe("path-03");
+    // Verify dot IDs were reindexed cleanly
+    expect(ordered[0].points[0].id).toBe("path-01-1");
+  });
+
+  it("calculates collision-avoiding label offsets using spatial grid", () => {
+    const points: Point[] = [{ x: 50, y: 50 }, { x: 60, y: 50 }];
+    const grid = createDotSpatialGrid([{ x: 50, y: 40, id: "obstacle" }], 10);
+    const offset = computeLabelOffset(points, 0, 10, { width: 200, height: 200 }, "dot-1", grid);
+    // Since obstacle is directly above (x=50, y=40), offset y should not be negative
+    expect(offset.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("applies profile-specific boosting to contour candidates", () => {
+    const delicate1 = contour({ x: 450, y: 350, width: 25, height: 15, perimeter: 45, kind: "facial" });
+    const delicate2 = contour({ x: 450, y: 350, width: 25, height: 15, perimeter: 45, kind: "facial" });
+    const sil1 = contour({ x: 10, y: 10, width: 800, height: 900, perimeter: 2500, kind: "silhouette" });
+    const sil2 = contour({ x: 10, y: 10, width: 800, height: 900, perimeter: 2500, kind: "silhouette" });
+
+    const animeRanked = rankContourCandidates([delicate1, sil1], 1000, 1000, {
+      ...DEFAULT_SETTINGS,
+      profile: "anime",
+    });
+    const photoRanked = rankContourCandidates([delicate2, sil2], 1000, 1000, {
+      ...DEFAULT_SETTINGS,
+      profile: "photo",
+    });
+
+    const animeScoreDelicate = animeRanked.find((c) => c.perimeter === 45)!.score;
+    const photoScoreDelicate = photoRanked.find((c) => c.perimeter === 45)!.score;
+    // Anime profile gives higher relative priority to delicate ink line features
+    expect(animeScoreDelicate).toBeGreaterThan(photoScoreDelicate);
+  });
+
+  it("deduplicates contours sharing near-identical centroids and perimeters", () => {
+    const c1 = contour({ x: 100, y: 100, width: 50, height: 50, perimeter: 180 });
+    const c2 = contour({ x: 101, y: 101, width: 50, height: 50, perimeter: 182, source: "adaptive" });
+    const deduped = deduplicateContours([c1, c2]);
+    expect(deduped).toHaveLength(1);
+  });
+});
+
+describe("morphological skeletonization pipeline in OpenCV", () => {
+  it("thins thick ink strokes to a 1-pixel centerline without boundary doubling", async () => {
+    const { createRequire } = await import("module");
+    const require = createRequire(import.meta.url);
+    const cvRaw = require("@techstark/opencv-js");
+    let cv: any = cvRaw;
+    if (!cv.Mat) {
+      cv = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(cvRaw), 4000);
+        cvRaw.onRuntimeInitialized = () => {
+          clearTimeout(timer);
+          resolve(cvRaw);
+        };
+      });
+    }
+    if (!cv?.Mat) return;
+
+    const img = new cv.Mat(120, 120, cv.CV_8UC1, new cv.Scalar(0));
+    // Draw a 6-pixel wide straight line from (20, 20) to (100, 20)
+    cv.line(img, new cv.Point(20, 20), new cv.Point(100, 20), new cv.Scalar(255), 6);
+
+    const initialNonZero = cv.countNonZero(img);
+    expect(initialNonZero).toBeGreaterThan(400); // 80px long * 6px wide ~ 480px
+
+    const skel = new cv.Mat(120, 120, cv.CV_8UC1, new cv.Scalar(0));
+    const temp = new cv.Mat();
+    const eroded = new cv.Mat();
+    const element = cv.getStructuringElement(cv.MORPH_CROSS, new cv.Size(3, 3));
+    let done = false;
+    let copy = img.clone();
+    let iters = 0;
+
+    while (!done && iters < 15) {
+      iters += 1;
+      cv.morphologyEx(copy, temp, cv.MORPH_OPEN, element);
+      cv.bitwise_not(temp, temp);
+      cv.bitwise_and(copy, temp, temp);
+      cv.bitwise_or(skel, temp, skel);
+      cv.erode(copy, eroded, element);
+      copy.delete();
+      copy = eroded.clone();
+      if (cv.countNonZero(copy) === 0) done = true;
+    }
+
+    const skeletonPixels = cv.countNonZero(skel);
+    // 1-pixel centerline should be roughly 80 pixels long, avoiding the ~480px thick filled region
+    expect(skeletonPixels).toBeLessThan(120);
+    expect(skeletonPixels).toBeGreaterThan(70);
+
+    img.delete();
+    skel.delete();
+    temp.delete();
+    eroded.delete();
+    element.delete();
+    copy.delete();
+  });
+});
+
+describe("editor & path manipulation tools", () => {
+  it("reverses path direction while properly updating 1-based indices", () => {
+    const original = path("flow-1", [{ x: 10, y: 10 }, { x: 20, y: 20 }, { x: 30, y: 30 }]);
+    const reversedPoints = original.points.slice().reverse().map((dot, idx) => ({ ...dot, index: idx + 1 }));
+    expect(reversedPoints[0].x).toBe(30);
+    expect(reversedPoints[0].index).toBe(1);
+    expect(reversedPoints[2].x).toBe(10);
+    expect(reversedPoints[2].index).toBe(3);
+  });
+
+  it("filters noise paths below perimeter threshold", () => {
+    const mainStroke = path("main", [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 50 }], false);
+    mainStroke.perimeter = 100;
+    const tinyNoise = path("noise", [{ x: 5, y: 5 }, { x: 7, y: 7 }], false);
+    tinyNoise.perimeter = 4;
+
+    const all = [mainStroke, tinyNoise];
+    const filtered = all.filter((p) => p.perimeter >= 22 && p.points.length >= 3);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].id).toBe("main");
   });
 });

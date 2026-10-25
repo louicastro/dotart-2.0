@@ -1,5 +1,11 @@
 import { ChevronDown, CircleHelp, RotateCw, X } from "lucide-react";
-import { DIFFICULTY_PRESETS, type Difficulty, type ProcessingSettings } from "../engine/types";
+import {
+  DIFFICULTY_PRESETS,
+  PROCESSING_PROFILES,
+  type Difficulty,
+  type ProcessingProfile,
+  type ProcessingSettings,
+} from "../engine/types";
 
 interface SettingsPanelProps {
   settings: ProcessingSettings;
@@ -51,6 +57,23 @@ export default function SettingsPanel({ settings, onChange, onRegenerate, onCanc
   return (
     <section className="panel settings-panel" aria-labelledby="settings-title">
       <div className="panel-heading"><div><span className="eyebrow">01 · Tune the detail</span><h2 id="settings-title">Puzzle settings</h2></div><span className="help-mark" title="Settings change how contours are selected and sampled."><CircleHelp size={15} /></span></div>
+      <div className="difficulty-block">
+        <div className="section-label">Image Profile <span className="section-rule" /></div>
+        <div className="profile-grid">
+          {(Object.entries(PROCESSING_PROFILES) as Array<[ProcessingProfile, typeof PROCESSING_PROFILES["anime"]]>).map(([id, info]) => (
+            <button
+              key={id}
+              type="button"
+              className={`profile-card${settings.profile === id ? " active" : ""}`}
+              onClick={() => update("profile", id)}
+              title={info.description}
+            >
+              <span className="profile-badge">{info.badge}</span>
+              <span className="profile-label">{info.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="difficulty-block">
         <div className="section-label">Difficulty</div>
         <div className="difficulty-list">

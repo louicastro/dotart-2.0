@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { computeLabelOffset, createDotSpatialGrid } from "../engine/geometry";
 import { numberPaths, pathMarker } from "../engine/numbering";
 import type { ProcessingSettings, PuzzleResult } from "../engine/types";
 
@@ -100,6 +101,9 @@ export default function CanvasEditor({
     const labelLookup = new Map(numberPlan.points.map((item) => [item.dotId, item]));
     const dotRadius = Math.max(2.2 / scale, (settings.dotSize * 0.95) / scale);
     const fontSize = Math.max(6.8, settings.labelSize * 0.75) / scale;
+    const labelGrid = settings.showNumbers
+      ? createDotSpatialGrid(result.paths.flatMap((p) => p.points), settings.labelSize)
+      : undefined;
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.font = `${fontSize}px "DM Mono", monospace`;
@@ -114,20 +118,24 @@ export default function CanvasEditor({
         }
         if (showNumbers && settings.showNumbers) {
           const label = labelLookup.get(dot.id)?.label ?? index + 1;
-          const previous = path.points[(index - 1 + path.points.length) % path.points.length];
-          const next = path.points[(index + 1) % path.points.length];
-          const angle = Math.atan2(next.y - previous.y, next.x - previous.x) - Math.PI / 2;
-          const radius = dotRadius + fontSize * 0.93;
-          let text = String(label);
-          if (index === 0) text = `${pathMarker(pathIndex)}·${label}`;
+          const marker = pathMarker(pathIndex);
+          const text = index === 0 ? `${marker}·${label}` : String(label);
+          const offset = computeLabelOffset(
+            path.points,
+            index,
+            settings.labelSize,
+            { width: result.width, height: result.height },
+            dot.id,
+            labelGrid,
+          );
           context.fillStyle = active ? "#ae412c" : "#333531";
-          context.fillText(text, dot.x + Math.cos(angle) * radius, dot.y + Math.sin(angle) * radius);
+          context.fillText(text, dot.x + offset.x, dot.y + offset.y + fontSize * 0.33);
         }
         if (showDots && index === 0) {
           context.beginPath();
-          context.arc(dot.x, dot.y, dotRadius * 2.1, 0, Math.PI * 2);
-          context.strokeStyle = active ? "#e45a3a" : "rgba(36,38,36,.38)";
-          context.lineWidth = 0.7 / scale;
+          context.arc(dot.x, dot.y, dotRadius * 2.3, 0, Math.PI * 2);
+          context.strokeStyle = active ? "#e45a3a" : "rgba(36,38,36,.55)";
+          context.lineWidth = 1.2 / scale;
           context.stroke();
         }
       });

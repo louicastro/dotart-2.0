@@ -1,5 +1,5 @@
 import { jsPDF } from "jspdf";
-import { countLabelCollisions } from "../engine/geometry";
+import { computeLabelOffset, countLabelCollisions, createDotSpatialGrid, type DotSpatialGrid } from "../engine/geometry";
 import { numberPaths, pathMarker } from "../engine/numbering";
 import type { ProcessingSettings, PuzzlePath, PuzzleResult, PuzzleWarning } from "../engine/types";
 
@@ -36,41 +36,9 @@ export interface ExportCheck {
   warnings: PuzzleWarning[];
 }
 
-interface DotGrid {
-  cellSize: number;
-  cells: Map<string, PuzzlePath["points"]>;
-}
-
-function gridKey(x: number, y: number): string {
-  return `${x}:${y}`;
-}
-
-function createDotGrid(result: PuzzleResult, labelSize: number): DotGrid {
-  const cellSize = Math.max(8, labelSize * 1.4);
-  const cells = new Map<string, PuzzlePath["points"]>();
-  for (const path of result.paths) {
-    for (const point of path.points) {
-      const key = gridKey(Math.floor(point.x / cellSize), Math.floor(point.y / cellSize));
-      const cell = cells.get(key);
-      if (cell) cell.push(point);
-      else cells.set(key, [point]);
-    }
-  }
-  return { cellSize, cells };
-}
-
-function dotsNear(grid: DotGrid, x: number, y: number, radius: number): PuzzlePath["points"] {
-  const result: PuzzlePath["points"] = [];
-  const minX = Math.floor((x - radius) / grid.cellSize);
-  const maxX = Math.floor((x + radius) / grid.cellSize);
-  const minY = Math.floor((y - radius) / grid.cellSize);
-  const maxY = Math.floor((y + radius) / grid.cellSize);
-  for (let cellX = minX; cellX <= maxX; cellX += 1) {
-    for (let cellY = minY; cellY <= maxY; cellY += 1) {
-      result.push(...(grid.cells.get(gridKey(cellX, cellY)) ?? []));
-    }
-  }
-  return result;
+function createDotGrid(result: PuzzleResult, labelSize: number): DotSpatialGrid {
+  const allDots = result.paths.flatMap((path) => path.points);
+  return createDotSpatialGrid(allDots, labelSize);
 }
 
 function exceedsPrintableBounds(result: PuzzleResult, settings: ProcessingSettings, options: ExportOptions, tiles: number): boolean {
@@ -146,52 +114,21 @@ function dotLabel(label: number, pathStart: boolean, marker: string, mode: Proce
   return mode === "multi" ? `${marker} ${label}` : `${marker}·${label}`;
 }
 
-function labelOffset(result: PuzzleResult, path: PuzzlePath, pointIndex: number, radius: number, dotGrid?: DotGrid): { x: number; y: number } {
-  const points = path.points;
-  const current = points[pointIndex];
-  const previous = points[(pointIndex - 1 + points.length) % points.length];
-  const next = points[(pointIndex + 1) % points.length];
-  const dx = next.x - previous.x;
-  const dy = next.y - previous.y;
-  const magnitude = Math.hypot(dx, dy) || 1;
-  const normalX = dy / magnitude;
-  const normalY = -dx / magnitude;
-  const candidates = [
-    { x: normalX, y: normalY },
-    { x: -normalX, y: -normalY },
-    { x: 0, y: -1 },
-    { x: 1, y: 0 },
-    { x: 0, y: 1 },
-    { x: -1, y: 0 },
-    { x: normalX + 0.7, y: normalY - 0.7 },
-    { x: normalX - 0.7, y: normalY + 0.7 },
-  ];
-  const step = radius + 5;
-  const clearanceRadius = Math.max(8, radius * 1.4);
-  const grid = dotGrid ?? createDotGrid(result, radius);
-  let best = candidates[0];
-  let bestScore = Infinity;
-  for (const candidate of candidates) {
-    const length = Math.hypot(candidate.x, candidate.y) || 1;
-    const x = current.x + candidate.x / length * step;
-    const y = current.y + candidate.y / length * step;
-    const pageMargin = Math.min(x, y, result.width - x, result.height - y);
-    let nearbyDotPenalty = 0;
-    for (const otherDot of dotsNear(grid, x, y, clearanceRadius)) {
-      if (otherDot.id === current.id) continue;
-      const separation = Math.hypot(otherDot.x - x, otherDot.y - y);
-      if (separation < clearanceRadius) nearbyDotPenalty += (clearanceRadius - separation) / clearanceRadius;
-    }
-    const edgePadding = radius * 0.55;
-    const edgePenalty = Math.max(0, edgePadding - pageMargin) * 8;
-    const score = nearbyDotPenalty * 100 + edgePenalty - Math.min(pageMargin, clearanceRadius * 4) * 0.01;
-    if (score < bestScore) {
-      best = candidate;
-      bestScore = score;
-    }
-  }
-  const norm = Math.hypot(best.x, best.y) || 1;
-  return { x: best.x / norm * step, y: best.y / norm * step };
+function labelOffset(
+  result: PuzzleResult,
+  path: PuzzlePath,
+  pointIndex: number,
+  radius: number,
+  dotGrid?: DotSpatialGrid,
+): { x: number; y: number } {
+  return computeLabelOffset(
+    path.points,
+    pointIndex,
+    radius,
+    { width: result.width, height: result.height },
+    path.points[pointIndex].id,
+    dotGrid ?? createDotGrid(result, radius),
+  );
 }
 
 export function buildPuzzleSvg(result: PuzzleResult, settings: ProcessingSettings, options?: { answerKey?: boolean; transparent?: boolean }): string {
@@ -349,7 +286,7 @@ function addPdfDrawing(
   row: number,
   answerKey: boolean,
   imageData?: string,
-  labelGrid?: DotGrid,
+  labelGrid?: DotSpatialGrid,
 ): void {
   const margin = options.marginMm;
   const tiles = answerKey ? 1 : options.posterTiles;

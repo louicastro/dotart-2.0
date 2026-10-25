@@ -74,13 +74,13 @@ export function rankContourCandidates(
     const cy = (contour.y + contour.height / 2) / height;
     const centrality = Math.max(0, 1 - Math.hypot((cx - 0.5) * 1.5, (cy - 0.46) * 1.3));
 
-    contour.kind = classifyContour(contour, width, height);
+    const kind = classifyContour(contour, width, height);
 
     // Minimum perimeter threshold: delicate facial features are allowed down to 7px,
     // while distant background noise is suppressed
-    const minLength = contour.kind === "facial" ? 7 : Math.max(10, 10 + settings.backgroundSuppression * 2.2);
+    const minLength = kind === "facial" ? 7 : Math.max(10, 10 + settings.backgroundSuppression * 2.2);
     if (contour.perimeter < minLength) continue;
-    if (relativeArea < 0.000012 + maxSuppression * 0.000025 && centrality < 0.62 && contour.kind !== "facial") continue;
+    if (relativeArea < 0.000012 + maxSuppression * 0.000025 && centrality < 0.62 && kind !== "facial") continue;
     if (relativeArea > 0.94 && contour.parent < 0) continue;
 
     const lineArtBoost = settings.lineArtEnhancement / 10;
@@ -89,18 +89,29 @@ export function rankContourCandidates(
     const sourceBoost = contour.source === "edge" ? 1.25 : 0.88;
     const sizeSignal = Math.min(12, (Math.sqrt(Math.max(0, contour.area)) / Math.max(1, diagonal)) * 30);
 
-    const semanticBoost = contour.kind === "facial" ? 2.5 + detailBoost * 0.7
-      : contour.kind === "hair" ? 1.8 + lineArtBoost * 0.5
-      : contour.kind === "silhouette" ? 1.5
-      : contour.kind === "clothing" ? 1.35
+    const semanticBoost = kind === "facial" ? 2.5 + detailBoost * 0.7
+      : kind === "hair" ? 1.8 + lineArtBoost * 0.5
+      : kind === "silhouette" ? 1.5
+      : kind === "clothing" ? 1.35
       : 1;
+
+    const profileBoost =
+      settings.profile === "anime"
+        ? (kind === "facial" ? 1.3 : kind === "hair" ? 1.15 : 1.0)
+        : settings.profile === "lineart"
+        ? (contour.perimeter > 25 ? 1.25 : 1.0)
+        : settings.profile === "photo"
+        ? (kind === "silhouette" ? 1.4 : relativeArea < 0.001 ? 0.75 : 1.0)
+        : 1.0;
 
     const peripheralPenalty = (cx < 0.035 || cx > 0.965 || cy < 0.025 || cy > 0.975) ? 0.68 : 1;
     const backgroundPenalty = relativeArea < 0.0008 && centrality < 0.45 ? 1 - maxSuppression * 0.55 : 1;
 
-    contour.score = (Math.sqrt(contour.perimeter) * 2.2 + sizeSignal + centrality * 10)
-      * parentBoost * sourceBoost * semanticBoost * peripheralPenalty * backgroundPenalty
+    const score = (Math.sqrt(contour.perimeter) * 2.2 + sizeSignal + centrality * 10)
+      * parentBoost * sourceBoost * semanticBoost * profileBoost * peripheralPenalty * backgroundPenalty
       * (1 + lineArtBoost * 0.1);
+    contour.kind = kind;
+    contour.score = score;
     scored.push(contour);
   }
   return scored.sort((a, b) => b.score - a.score);
@@ -119,8 +130,16 @@ function rectangleOverlap(a: RawContour, b: RawContour): number {
 export function deduplicateContours(contours: RawContour[]): RawContour[] {
   const accepted: RawContour[] = [];
   for (const contour of contours) {
-    const duplicate = accepted.some((previous) => rectangleOverlap(previous, contour) > 0.91
-      && Math.abs(previous.perimeter - contour.perimeter) / Math.max(previous.perimeter, contour.perimeter) < 0.18);
+    const cx = contour.x + contour.width / 2;
+    const cy = contour.y + contour.height / 2;
+    const duplicate = accepted.some((previous) => {
+      const prevCx = previous.x + previous.width / 2;
+      const prevCy = previous.y + previous.height / 2;
+      const centroidDist = Math.hypot(cx - prevCx, cy - prevCy);
+      const perimDiff = Math.abs(previous.perimeter - contour.perimeter) / Math.max(previous.perimeter, contour.perimeter, 1);
+      const iou = rectangleOverlap(previous, contour);
+      return (iou > 0.88 && perimDiff < 0.22) || (centroidDist < 3.5 && perimDiff < 0.18);
+    });
     if (!duplicate) accepted.push(contour);
   }
   return accepted;

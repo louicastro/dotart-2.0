@@ -1,4 +1,4 @@
-import type { Dot } from "./types";
+import type { Dot, PuzzlePath } from "./types";
 
 export interface Point {
   x: number;
@@ -315,4 +315,233 @@ export function countLabelCollisions(paths: Array<{ points: Dot[] }>, labelSize:
     }
   }
   return collisions;
+}
+
+/**
+ * Connects micro-fractured open stroke segments whose endpoints are within a small distance
+ * without creating self-intersections or false joins.
+ */
+export function bridgeMicroGaps(strokes: Point[][], maxGap = 5): Point[][] {
+  if (strokes.length <= 1) return strokes;
+  const pool = strokes.map((s) => s.slice());
+  let mergedAny = true;
+
+  while (mergedAny) {
+    mergedAny = false;
+    outerLoop:
+    for (let i = 0; i < pool.length; i += 1) {
+      const s1 = pool[i];
+      if (s1.length < 2) continue;
+      const end1 = s1[s1.length - 1];
+      const start1 = s1[0];
+
+      for (let j = i + 1; j < pool.length; j += 1) {
+        const s2 = pool[j];
+        if (s2.length < 2) continue;
+        const start2 = s2[0];
+        const end2 = s2[s2.length - 1];
+
+        // End of s1 to start of s2
+        if (distance(end1, start2) <= maxGap) {
+          pool[i] = s1.concat(s2);
+          pool.splice(j, 1);
+          mergedAny = true;
+          break outerLoop;
+        }
+        // End of s1 to end of s2 (reversed)
+        if (distance(end1, end2) <= maxGap) {
+          pool[i] = s1.concat(s2.slice().reverse());
+          pool.splice(j, 1);
+          mergedAny = true;
+          break outerLoop;
+        }
+        // Start of s1 to end of s2
+        if (distance(start1, end2) <= maxGap) {
+          pool[i] = s2.concat(s1);
+          pool.splice(j, 1);
+          mergedAny = true;
+          break outerLoop;
+        }
+        // Start of s1 to start of s2 (reversed)
+        if (distance(start1, start2) <= maxGap) {
+          pool[i] = s2.slice().reverse().concat(s1);
+          pool.splice(j, 1);
+          mergedAny = true;
+          break outerLoop;
+        }
+      }
+    }
+  }
+
+  return pool;
+}
+
+/**
+ * Orders puzzle paths in a spatially coherent sequence (starting with the main silhouette
+ * or largest feature, then visiting nearest adjacent paths) to ensure natural eye flow.
+ */
+export function orderPathsSpatially(paths: PuzzlePath[]): PuzzlePath[] {
+  if (paths.length <= 1) return paths;
+
+  let startIndex = paths.findIndex((p) => p.kind === "silhouette");
+  if (startIndex < 0) {
+    startIndex = 0;
+    let maxArea = -1;
+    paths.forEach((p, idx) => {
+      if (p.perimeter > maxArea) {
+        maxArea = p.perimeter;
+        startIndex = idx;
+      }
+    });
+  }
+
+  const unvisited = paths.slice();
+  const [first] = unvisited.splice(startIndex, 1);
+  const ordered: PuzzlePath[] = [first];
+
+  const getCentroid = (p: PuzzlePath): Point => {
+    if (!p.points.length) return { x: 0, y: 0 };
+    let sx = 0;
+    let sy = 0;
+    for (const pt of p.points) {
+      sx += pt.x;
+      sy += pt.y;
+    }
+    return { x: sx / p.points.length, y: sy / p.points.length };
+  };
+
+  while (unvisited.length > 0) {
+    const last = ordered[ordered.length - 1];
+    const lastPoint = last.points[last.points.length - 1] ?? getCentroid(last);
+    let bestIdx = 0;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < unvisited.length; i += 1) {
+      const cand = unvisited[i];
+      const candStart = cand.points[0] ?? getCentroid(cand);
+      const candEnd = cand.points[cand.points.length - 1] ?? candStart;
+      const d = Math.min(
+        distance(lastPoint, candStart),
+        distance(lastPoint, candEnd),
+      );
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+
+    const [nextPath] = unvisited.splice(bestIdx, 1);
+    ordered.push(nextPath);
+  }
+
+  return ordered.map((path, idx) => {
+    const id = `path-${String(idx + 1).padStart(2, "0")}`;
+    return {
+      ...path,
+      id,
+      points: path.points.map((dot, dIdx) => ({
+        ...dot,
+        id: `${id}-${dIdx + 1}`,
+        index: dIdx + 1,
+      })),
+    };
+  });
+}
+
+export interface DotSpatialGrid {
+  cellSize: number;
+  cells: Map<string, Array<{ x: number; y: number; id: string }>>;
+}
+
+export function createDotSpatialGrid(
+  dots: Array<{ x: number; y: number; id: string }>,
+  labelSize: number,
+): DotSpatialGrid {
+  const cellSize = Math.max(8, labelSize * 1.4);
+  const cells = new Map<string, Array<{ x: number; y: number; id: string }>>();
+  for (const dot of dots) {
+    const key = `${Math.floor(dot.x / cellSize)}:${Math.floor(dot.y / cellSize)}`;
+    const list = cells.get(key);
+    if (list) list.push(dot);
+    else cells.set(key, [dot]);
+  }
+  return { cellSize, cells };
+}
+
+export function dotsNearGrid(
+  grid: DotSpatialGrid,
+  x: number,
+  y: number,
+  radius: number,
+): Array<{ x: number; y: number; id: string }> {
+  const result: Array<{ x: number; y: number; id: string }> = [];
+  const minX = Math.floor((x - radius) / grid.cellSize);
+  const maxX = Math.floor((x + radius) / grid.cellSize);
+  const minY = Math.floor((y - radius) / grid.cellSize);
+  const maxY = Math.floor((y + radius) / grid.cellSize);
+  for (let cellX = minX; cellX <= maxX; cellX += 1) {
+    for (let cellY = minY; cellY <= maxY; cellY += 1) {
+      const cell = grid.cells.get(`${cellX}:${cellY}`);
+      if (cell) result.push(...cell);
+    }
+  }
+  return result;
+}
+
+export function computeLabelOffset(
+  points: Point[],
+  pointIndex: number,
+  labelSize: number,
+  bounds: { width: number; height: number },
+  currentId?: string,
+  grid?: DotSpatialGrid,
+): { x: number; y: number } {
+  const current = points[pointIndex];
+  const previous = points[(pointIndex - 1 + points.length) % points.length];
+  const next = points[(pointIndex + 1) % points.length];
+  const dx = next.x - previous.x;
+  const dy = next.y - previous.y;
+  const magnitude = Math.hypot(dx, dy) || 1;
+  const normalX = dy / magnitude;
+  const normalY = -dx / magnitude;
+  const candidates = [
+    { x: normalX, y: normalY },
+    { x: -normalX, y: -normalY },
+    { x: 0, y: -1 },
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+    { x: -1, y: 0 },
+    { x: normalX + 0.7, y: normalY - 0.7 },
+    { x: normalX - 0.7, y: normalY + 0.7 },
+  ];
+  const step = labelSize + 5;
+  const clearanceRadius = Math.max(8, labelSize * 1.4);
+  let best = candidates[0];
+  let bestScore = Infinity;
+
+  for (const candidate of candidates) {
+    const length = Math.hypot(candidate.x, candidate.y) || 1;
+    const x = current.x + (candidate.x / length) * step;
+    const y = current.y + (candidate.y / length) * step;
+    const pageMargin = Math.min(x, y, bounds.width - x, bounds.height - y);
+    let nearbyDotPenalty = 0;
+    if (grid) {
+      for (const otherDot of dotsNearGrid(grid, x, y, clearanceRadius)) {
+        if (otherDot.id === currentId) continue;
+        const separation = Math.hypot(otherDot.x - x, otherDot.y - y);
+        if (separation < clearanceRadius) {
+          nearbyDotPenalty += (clearanceRadius - separation) / clearanceRadius;
+        }
+      }
+    }
+    const edgePadding = labelSize * 0.55;
+    const edgePenalty = Math.max(0, edgePadding - pageMargin) * 8;
+    const score = nearbyDotPenalty * 100 + edgePenalty - Math.min(pageMargin, clearanceRadius * 4) * 0.01;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  const norm = Math.hypot(best.x, best.y) || 1;
+  return { x: (best.x / norm) * step, y: (best.y / norm) * step };
 }
