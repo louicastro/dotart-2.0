@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: "DM Sans", sans-serif;
+  color: #242624;
+  background: #f7f5f0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --paper: #f7f5f0;
+  --paper-bright: #fffefa;
+  --ink: #242624;
+  --muted: #777873;
+  --line: #e6e2d8;
+  --accent: #e45a3a;
+  --sage: #607764;
+  --mono: "DM Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--paper); }
+button, input, select { font: inherit; }
+button { color: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid rgba(228, 90, 58, .38); outline-offset: 2px; }
+::selection { background: rgba(228, 90, 58, .18); }
+
+@layer base {
+  h1, h2, h3, p { margin-top: 0; }
+  button { cursor: pointer; }
+}
