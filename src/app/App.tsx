@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, ArrowLeft, Check, ChevronDown, ChevronRight, Eye, EyeOff, FileDown, Image as ImageIcon, Info, LoaderCircle, Redo2, RotateCcw, ScanLine, ShieldCheck, SlidersHorizontal, Undo2, X } from "lucide-react";
+import { Activity, ArrowLeft, Check, ChevronDown, ChevronRight, Eye, EyeOff, FileDown, Image as ImageIcon, Info, LoaderCircle, Minus, Plus, Redo2, RotateCcw, ScanLine, ShieldCheck, SlidersHorizontal, Undo2, X } from "lucide-react";
 import CanvasEditor from "../components/CanvasEditor";
 import ExportPanel from "../components/ExportPanel";
 import SampleGallery, { SAMPLE_IMAGE_URL } from "../components/SampleGallery";
@@ -69,8 +69,22 @@ export default function App() {
   const [showOriginal, setShowOriginal] = useState(false);
   const [showPaths, setShowPaths] = useState(true);
   const [showDots, setShowDots] = useState(true);
-  const [overlayOpacity, setOverlayOpacity] = useState(0.18);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.25);
   const [editingDots, setEditingDots] = useState(false);
+
+  const increaseOverlay = () => {
+    setShowOriginal(true);
+    setOverlayOpacity((current) => Math.min(1.0, Math.round((current + 0.1) * 100) / 100));
+  };
+
+  const decreaseOverlay = () => {
+    setOverlayOpacity((current) => Math.max(0.05, Math.round((current - 0.1) * 100) / 100));
+  };
+
+  const handleSetOverlayOpacity = (val: number) => {
+    if (!showOriginal && val > 0) setShowOriginal(true);
+    setOverlayOpacity(Math.max(0.05, Math.min(1.0, val)));
+  };
   const [exportOptions, setExportOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
   const [exporting, setExporting] = useState(false);
   const [exportWarnings, setExportWarnings] = useState<string[]>([]);
@@ -426,16 +440,185 @@ export default function App() {
         <aside className="left-rail"><SettingsPanel settings={settings} onChange={updateSettings} onRegenerate={regenerate} onCancel={cancel} processing={processing} dirty={dirty} progress={progress} stage={stage} /></aside>
 
         <section className="editor-column">
-          <div className="editor-titlebar"><div><span className="eyebrow">02 · Canvas & paths</span><h1>Your puzzle workspace</h1></div><div className="canvas-toggles"><button className={`canvas-toggle${showOriginal ? " active" : ""}`} type="button" onClick={() => setShowOriginal((show) => !show)}><Eye size={14}/> Reference</button><button className={`canvas-toggle${showPaths ? " active" : ""}`} type="button" onClick={() => setShowPaths((show) => !show)}><ScanLine size={14}/> Paths</button><button className={`canvas-toggle${showDots ? " active" : ""}`} type="button" onClick={() => setShowDots((show) => !show)}>Dots</button><button className={`canvas-toggle${settings.showNumbers ? " active" : ""}`} type="button" onClick={() => updateSettings({ ...settings, showNumbers: !settings.showNumbers })}>{settings.showNumbers ? <Eye size={14}/> : <EyeOff size={14}/>} Numbers</button></div></div>
+          <div className="editor-titlebar">
+            <div>
+              <span className="eyebrow">02 · Canvas & paths</span>
+              <h1>Your puzzle workspace</h1>
+            </div>
+            <div className="canvas-toggles">
+              <button
+                className={`canvas-toggle${showOriginal ? " active" : ""}`}
+                type="button"
+                onClick={() => setShowOriginal((show) => !show)}
+              >
+                <Eye size={14} /> Reference
+              </button>
+              <button
+                className={`canvas-toggle${showPaths ? " active" : ""}`}
+                type="button"
+                onClick={() => setShowPaths((show) => !show)}
+              >
+                <ScanLine size={14} /> Paths
+              </button>
+              <button
+                className={`canvas-toggle${showDots ? " active" : ""}`}
+                type="button"
+                onClick={() => setShowDots((show) => !show)}
+              >
+                Dots
+              </button>
+              <button
+                className={`canvas-toggle${settings.showNumbers ? " active" : ""}`}
+                type="button"
+                onClick={() => updateSettings({ ...settings, showNumbers: !settings.showNumbers })}
+              >
+                {settings.showNumbers ? <Eye size={14} /> : <EyeOff size={14} />} Numbers
+              </button>
+            </div>
+          </div>
 
-          {!result && processing ? <div className="canvas-empty canvas-loading"><LoaderCircle size={28} className="spin-icon"/><span className="eyebrow">{stage || "Preparing the image"}</span><h2>Following the contours.</h2><p>OpenCV is analyzing this image locally. You can cancel at any time.</p><div className="progress-track large"><span style={{ width: `${Math.max(4, progress * 100)}%` }}/></div><span className="progress-value">{Math.round(progress * 100)}%</span></div> : !result ? <div className="canvas-empty"><span className="empty-mark"><ScanLine size={25}/></span><h2>Ready when you are.</h2><p>Choose an image to detect its first contour paths.</p></div> : <CanvasEditor image={image} result={result} settings={settings} showOriginal={showOriginal} showPaths={showPaths} showDots={showDots} showNumbers={settings.showNumbers} overlayOpacity={overlayOpacity} selectedPathId={selectedPathId} editing={editingDots} onSelectPath={setSelectedPathId} onSelectDot={(pathId, dotId) => setSelectedDot({ pathId, dotId })} onMoveDot={moveDot} />}
+          {showOriginal && (
+            <div className="reference-overlay-bar">
+              <div className="overlay-bar-left">
+                <span className="overlay-bar-label">
+                  <Eye size={13} /> Reference view opacity
+                </span>
+                <span className="overlay-pct-badge">{Math.round(overlayOpacity * 100)}%</span>
+              </div>
+              <div className="overlay-bar-controls">
+                <button
+                  type="button"
+                  className="overlay-step-btn"
+                  onClick={decreaseOverlay}
+                  title="Decrease reference view opacity (−10%)"
+                  aria-label="Decrease reference view opacity"
+                  disabled={overlayOpacity <= 0.05}
+                >
+                  <Minus size={13} />
+                </button>
+                <input
+                  type="range"
+                  min={0.05}
+                  max={1.0}
+                  step={0.05}
+                  value={overlayOpacity}
+                  onChange={(event) => handleSetOverlayOpacity(Number(event.currentTarget.value))}
+                  aria-label="Reference image overlay opacity"
+                  className="overlay-slider"
+                />
+                <button
+                  type="button"
+                  className="overlay-step-btn"
+                  onClick={increaseOverlay}
+                  title="Increase reference view opacity (+10%)"
+                  aria-label="Increase reference view opacity"
+                  disabled={overlayOpacity >= 1.0}
+                >
+                  <Plus size={13} />
+                </button>
+                <div className="overlay-presets">
+                  {[0.15, 0.35, 0.60, 0.90].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className={`overlay-preset-btn${Math.abs(overlayOpacity - preset) < 0.05 ? " active" : ""}`}
+                      onClick={() => handleSetOverlayOpacity(preset)}
+                    >
+                      {Math.round(preset * 100)}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
-          {result && <>
-            <div className="canvas-statusline"><span className="status-ready"><Check size={13}/>{processing ? `Updating · ${Math.round(progress * 100)}%` : dirty ? "Previous result · regenerate" : "Contours ready"}</span><span>{result.totalDots.toLocaleString()} dots</span><span>{result.paths.length} separate paths</span><span>{result.processingMs} ms</span></div>
-            {showOriginal && <label className="overlay-control"><span>Reference opacity</span><input type="range" min={0} max={0.8} step={0.05} value={overlayOpacity} onChange={(event) => setOverlayOpacity(Number(event.currentTarget.value))}/><span>{Math.round(overlayOpacity * 100)}%</span></label>}
-            <div className="comparison-row"><div className="comparison-card"><div className="comparison-heading"><span>ORIGINAL</span><span>{metadata?.width} × {metadata?.height}</span></div>{image && <img src={image.src} alt="Original uploaded image"/>}</div><div className="comparison-card"><div className="comparison-heading"><span>NUMBERED PUZZLE</span><span>{result.totalDots} DOTS · {result.paths.length} PATHS</span></div>{previewUrl && <img src={previewUrl} alt="Numbered paths generated by the local image processor"/>}</div></div>
-            {result.warnings.length > 0 && <div className="result-warnings"><Info size={14}/><div>{result.warnings.map((warning) => <p key={warning.code}>{warning.message}</p>)}</div></div>}
-          </>}
+          {!result && processing ? (
+            <div className="canvas-empty canvas-loading">
+              <LoaderCircle size={28} className="spin-icon" />
+              <span className="eyebrow">{stage || "Preparing the image"}</span>
+              <h2>Following the contours.</h2>
+              <p>OpenCV is analyzing this image locally. You can cancel at any time.</p>
+              <div className="progress-track large">
+                <span style={{ width: `${Math.max(4, progress * 100)}%` }} />
+              </div>
+              <span className="progress-value">{Math.round(progress * 100)}%</span>
+            </div>
+          ) : !result ? (
+            <div className="canvas-empty">
+              <span className="empty-mark">
+                <ScanLine size={25} />
+              </span>
+              <h2>Ready when you are.</h2>
+              <p>Choose an image to detect its first contour paths.</p>
+            </div>
+          ) : (
+            <CanvasEditor
+              image={image}
+              result={result}
+              settings={settings}
+              showOriginal={showOriginal}
+              showPaths={showPaths}
+              showDots={showDots}
+              showNumbers={settings.showNumbers}
+              overlayOpacity={overlayOpacity}
+              selectedPathId={selectedPathId}
+              editing={editingDots}
+              onSelectPath={setSelectedPathId}
+              onSelectDot={(pathId, dotId) => setSelectedDot({ pathId, dotId })}
+              onMoveDot={moveDot}
+              onSetOverlayOpacity={handleSetOverlayOpacity}
+            />
+          )}
+
+          {result && (
+            <>
+              <div className="canvas-statusline">
+                <span className="status-ready">
+                  <Check size={13} />
+                  {processing
+                    ? `Updating · ${Math.round(progress * 100)}%`
+                    : dirty
+                    ? "Previous result · regenerate"
+                    : "Contours ready"}
+                </span>
+                <span>{result.totalDots.toLocaleString()} dots</span>
+                <span>{result.paths.length} separate paths</span>
+                <span>{result.processingMs} ms</span>
+              </div>
+              <div className="comparison-row">
+                <div className="comparison-card">
+                  <div className="comparison-heading">
+                    <span>ORIGINAL</span>
+                    <span>
+                      {metadata?.width} × {metadata?.height}
+                    </span>
+                  </div>
+                  {image && <img src={image.src} alt="Original uploaded image" />}
+                </div>
+                <div className="comparison-card">
+                  <div className="comparison-heading">
+                    <span>NUMBERED PUZZLE</span>
+                    <span>
+                      {result.totalDots} DOTS · {result.paths.length} PATHS
+                    </span>
+                  </div>
+                  {previewUrl && (
+                    <img src={previewUrl} alt="Numbered paths generated by the local image processor" />
+                  )}
+                </div>
+              </div>
+              {result.warnings.length > 0 && (
+                <div className="result-warnings">
+                  <Info size={14} />
+                  <div>
+                    {result.warnings.map((warning) => (
+                      <p key={warning.code}>{warning.message}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </section>
 
         <aside className="right-rail">

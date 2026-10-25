@@ -4,9 +4,11 @@ import {
   mapSettingsToPrecisionParams,
   validateSettings,
   type ProcessingSettings,
+  type PuzzleResult,
 } from "../engine/types";
 import { sampleAdaptiveDots, type Point } from "../engine/geometry";
 import { rankContourCandidates, type RawContour } from "../engine/contours";
+import { buildPuzzleSvg } from "../export/exporter";
 
 function mockContour(overrides: Partial<RawContour> = {}): RawContour {
   return {
@@ -238,5 +240,55 @@ describe("Precision Controls: Background Suppression & Facial Detail Retention",
     });
 
     expect(animeRanked[0].score).toBeGreaterThan(photoRanked[0].score);
+  });
+});
+
+describe("Dot Styling & Appearance Controls", () => {
+  it("defaults dotColor to #222522 and validates custom hex colors", () => {
+    expect(DEFAULT_SETTINGS.dotColor).toBe("#222522");
+
+    const custom = validateSettings({ dotColor: "#e45a3a" });
+    expect(custom.dotColor).toBe("#e45a3a");
+
+    const invalid = validateSettings({ dotColor: "not-a-color" });
+    expect(invalid.dotColor).toBe("#222522");
+  });
+
+  it("applies customized dot color into SVG export circles", () => {
+    const mockResult: PuzzleResult = {
+      width: 100,
+      height: 100,
+      paths: [
+        {
+          id: "test-path",
+          kind: "facial",
+          closed: false,
+          area: 50,
+          perimeter: 30,
+          score: 10,
+          points: [
+            { id: "dot-1", x: 10, y: 10, index: 1 },
+            { id: "dot-2", x: 20, y: 20, index: 2 },
+          ],
+        },
+      ],
+      totalDots: 2,
+      processingMs: 5,
+      engine: "opencv",
+      warnings: [],
+      contourCount: 1,
+    };
+
+    const redSvg = buildPuzzleSvg(mockResult, {
+      ...DEFAULT_SETTINGS,
+      dotColor: "#e45a3a",
+    });
+    expect(redSvg).toContain('fill="#e45a3a"');
+
+    const blueSvg = buildPuzzleSvg(mockResult, {
+      ...DEFAULT_SETTINGS,
+      dotColor: "#2563eb",
+    });
+    expect(blueSvg).toContain('fill="#2563eb"');
   });
 });

@@ -34,6 +34,7 @@ export interface ProcessingSettings {
   labelSize: number;
   showNumbers: boolean;
   dotSize: number;
+  dotColor: string;
   printScale: number;
   pathMode: PathMode;
   closeContours: boolean;
@@ -189,6 +190,9 @@ export function validateSettings(input: Partial<ProcessingSettings>): Processing
   const pathComplexity = Math.max(1, Math.min(10, Math.round(input.pathComplexity ?? 6)));
   const labelSize = Math.max(6, Math.min(18, Math.round(input.labelSize ?? 9)));
   const dotSize = Math.max(1, Math.min(6, input.dotSize ?? 2.6));
+  const dotColor = typeof input.dotColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(input.dotColor)
+    ? input.dotColor
+    : "#222522";
   const printScale = Math.max(70, Math.min(130, Math.round(input.printScale ?? 100)));
   const pathMode = input.pathMode === "continuous" ? "continuous" : "multi";
   const closeContours = input.closeContours !== false;
@@ -209,6 +213,7 @@ export function validateSettings(input: Partial<ProcessingSettings>): Processing
     labelSize,
     showNumbers: input.showNumbers !== false,
     dotSize,
+    dotColor,
     printScale,
     pathMode,
     closeContours,
@@ -283,6 +288,7 @@ export const DEFAULT_SETTINGS: ProcessingSettings = {
   labelSize: 9,
   showNumbers: true,
   dotSize: 2.6,
+  dotColor: "#222522",
   printScale: 100,
   pathMode: "multi",
   closeContours: true,

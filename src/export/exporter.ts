@@ -150,7 +150,7 @@ export function buildPuzzleSvg(result: PuzzleResult, settings: ProcessingSetting
     const marker = markerLabel(path, pathIndex);
     const offset = labelOffset(result, path, index, settings.labelSize, labelGrid);
     const label = dotLabel(entry?.label ?? index + 1, index === 0, marker, settings.pathMode);
-    const dotMarkup = `<circle cx="${dot.x.toFixed(2)}" cy="${dot.y.toFixed(2)}" r="${radius.toFixed(2)}" fill="#181a18"/>`;
+    const dotMarkup = `<circle cx="${dot.x.toFixed(2)}" cy="${dot.y.toFixed(2)}" r="${radius.toFixed(2)}" fill="${settings.dotColor || "#181a18"}"/>`;
     const textMarkup = settings.showNumbers
       ? `<text x="${(dot.x + offset.x).toFixed(2)}" y="${(dot.y + offset.y + fontSize * 0.33).toFixed(2)}" text-anchor="middle" font-family="DM Mono,monospace" font-size="${fontSize.toFixed(2)}" fill="#242624">${esc(label)}</text>`
       : "";
@@ -235,7 +235,7 @@ export function createPuzzleCanvas(
       const y = dot.y * sy;
       context.beginPath();
       context.arc(x, y, dotRadius, 0, Math.PI * 2);
-      context.fillStyle = "#171917";
+      context.fillStyle = settings.dotColor || "#171917";
       context.fill();
       if (!settings.showNumbers) continue;
       const entry = labelById.get(dot.id);
@@ -273,6 +273,24 @@ function mappedPoint(x: number, y: number, transform: { scale: number; offsetX: 
   const tileW = pageW - 2 * margin;
   const tileH = pageH - 2 * margin;
   return [margin + transform.offsetX + x * transform.scale - col * tileW, margin + transform.offsetY + y * transform.scale - row * tileH];
+}
+
+function hexToRgb(hex?: string): [number, number, number] {
+  if (!hex || !hex.startsWith("#")) return [25, 26, 24];
+  const clean = hex.slice(1);
+  if (clean.length === 3) {
+    const r = parseInt(clean[0] + clean[0], 16);
+    const g = parseInt(clean[1] + clean[1], 16);
+    const b = parseInt(clean[2] + clean[2], 16);
+    return [isNaN(r) ? 25 : r, isNaN(g) ? 26 : g, isNaN(b) ? 24 : b];
+  }
+  if (clean.length >= 6) {
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return [isNaN(r) ? 25 : r, isNaN(g) ? 26 : g, isNaN(b) ? 24 : b];
+  }
+  return [25, 26, 24];
 }
 
 function addPdfDrawing(
@@ -315,7 +333,8 @@ function addPdfDrawing(
   }
   const numbered = getLabelPlan(result, settings);
   const numberById = new Map(numbered.points.map((item) => [item.dotId, item]));
-  pdf.setFillColor(25, 26, 24);
+  const [dotR, dotG, dotB] = hexToRgb(settings.dotColor);
+  pdf.setFillColor(dotR, dotG, dotB);
   pdf.setTextColor(33, 34, 32);
   pdf.setFont("courier", "normal");
   for (let pathIndex = 0; pathIndex < result.paths.length; pathIndex += 1) {

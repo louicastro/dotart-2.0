@@ -17,6 +17,7 @@ interface CanvasEditorProps {
   onSelectPath: (pathId: string) => void;
   onSelectDot: (pathId: string, dotId: string) => void;
   onMoveDot: (pathId: string, dotId: string, x: number, y: number) => void;
+  onSetOverlayOpacity?: (opacity: number) => void;
 }
 
 interface ViewTransform {
@@ -41,6 +42,7 @@ export default function CanvasEditor({
   onSelectPath,
   onSelectDot,
   onMoveDot,
+  onSetOverlayOpacity,
 }: CanvasEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -109,11 +111,12 @@ export default function CanvasEditor({
     context.font = `${fontSize}px "DM Mono", monospace`;
     result.paths.forEach((path, pathIndex) => {
       const active = path.id === selectedPathId;
+      const dotFillColor = active ? "#e45a3a" : (settings.dotColor || "#222522");
       path.points.forEach((dot, index) => {
         if (showDots) {
           context.beginPath();
           context.arc(dot.x, dot.y, dotRadius * (active ? 1.16 : 1), 0, Math.PI * 2);
-          context.fillStyle = active ? "#e45a3a" : "#222522";
+          context.fillStyle = dotFillColor;
           context.fill();
         }
         if (showNumbers && settings.showNumbers) {
@@ -134,7 +137,7 @@ export default function CanvasEditor({
         if (showDots && index === 0) {
           context.beginPath();
           context.arc(dot.x, dot.y, dotRadius * 2.3, 0, Math.PI * 2);
-          context.strokeStyle = active ? "#e45a3a" : "rgba(36,38,36,.55)";
+          context.strokeStyle = active ? "#e45a3a" : (settings.dotColor || "rgba(36,38,36,.55)");
           context.lineWidth = 1.2 / scale;
           context.stroke();
         }
@@ -208,7 +211,10 @@ export default function CanvasEditor({
   return (
     <div className="canvas-shell">
       <div className="canvas-topline">
-        <span><span className="canvas-swatch" /> {showPaths ? "Contour paths" : "Numbered dots"}</span>
+        <span>
+          <span className="canvas-swatch" style={{ background: settings.dotColor || "var(--accent)" }} />{" "}
+          {showPaths ? "Contour paths" : "Numbered dots"}
+        </span>
         <span>{result.width} × {result.height} px</span>
       </div>
       <div className={`canvas-stage${editing ? " is-editing" : ""}`} ref={containerRef}>
@@ -223,7 +229,64 @@ export default function CanvasEditor({
           onWheel={handleWheel}
         />
         {editing && <div className="canvas-edit-badge">Dot edit · drag a dot to reposition</div>}
-        <button className="canvas-reset" type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="Reset canvas zoom and pan">Reset view</button>
+
+        <div className="canvas-view-controls">
+          <button
+            type="button"
+            className="canvas-stage-btn"
+            onClick={() => setZoom((z) => Math.min(5, Math.round(z * 1.25 * 100) / 100))}
+            title="Zoom in view (+)"
+            aria-label="Zoom in view"
+          >
+            +
+          </button>
+          <span className="canvas-zoom-pill">{Math.round(zoom * 100)}%</span>
+          <button
+            type="button"
+            className="canvas-stage-btn"
+            onClick={() => setZoom((z) => Math.max(0.35, Math.round((z / 1.25) * 100) / 100))}
+            title="Zoom out view (−)"
+            aria-label="Zoom out view"
+          >
+            −
+          </button>
+          <button
+            className="canvas-stage-btn"
+            type="button"
+            style={{ width: "auto", padding: "0 6px", fontSize: "9px" }}
+            onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
+            aria-label="Reset canvas zoom and pan"
+            title="Reset canvas view"
+          >
+            Reset
+          </button>
+        </div>
+
+        {showOriginal && image && onSetOverlayOpacity && (
+          <div className="canvas-overlay-floating">
+            <span>Reference {Math.round(overlayOpacity * 100)}%</span>
+            <div className="canvas-overlay-stepper">
+              <button
+                type="button"
+                onClick={() => onSetOverlayOpacity(Math.max(0.05, Math.round((overlayOpacity - 0.1) * 100) / 100))}
+                title="Decrease reference view opacity (-10%)"
+                disabled={overlayOpacity <= 0.05}
+                aria-label="Decrease reference view opacity"
+              >
+                −
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetOverlayOpacity(Math.min(1.0, Math.round((overlayOpacity + 0.1) * 100) / 100))}
+                title="Increase reference view opacity (+10%)"
+                disabled={overlayOpacity >= 1.0}
+                aria-label="Increase reference view opacity"
+              >
+                +
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="canvas-footline"><span>Wheel to zoom · drag to pan</span><span>{settings.pathMode === "multi" ? "Lettered paths restart at 1" : "Global numbering · paths stay separate"}</span></div>
     </div>

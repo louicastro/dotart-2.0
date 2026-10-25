@@ -386,3 +386,43 @@
 .path-tool-strip button.danger-tool { color:#9d3c26; border-color:#e8c3b9; background:#fdf4f1; }
 .path-tool-strip button.danger-tool:hover:not(:disabled) { background:#fbe7e1; }
 
+/* Dot Color Controls */
+.color-control-block { margin-top:10px; display:grid; gap:7px; }
+.color-picker-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.color-presets { display:flex; align-items:center; gap:5px; }
+.color-swatch-btn { width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px #d5d1c8; cursor:pointer; transition:transform .12s, box-shadow .12s; padding:0; }
+.color-swatch-btn:hover { transform:scale(1.15); box-shadow:0 0 0 2px var(--accent); }
+.color-swatch-btn.active { transform:scale(1.18); box-shadow:0 0 0 2px var(--accent), 0 0 6px rgba(228,90,58,.4); }
+.custom-color-input { display:inline-flex; align-items:center; gap:5px; padding:3px 7px; background:#fffefa; border:1px solid #dcd8ce; border-radius:14px; cursor:pointer; position:relative; }
+.custom-color-input input[type=color] { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
+.color-preview-circle { width:14px; height:14px; border-radius:50%; border:1px solid rgba(0,0,0,.15); display:inline-block; }
+.color-custom-label { font-size:8px; font-weight:600; color:#555750; }
+
+/* Reference Image Overlay Controls Bar */
+.reference-overlay-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; background:#fbf9f4; border:1px solid #e7e2d7; border-radius:5px; flex-wrap:wrap; }
+.overlay-bar-left { display:flex; align-items:center; gap:8px; }
+.overlay-bar-label { display:inline-flex; align-items:center; gap:5px; font-size:9px; font-weight:600; color:#4a4d45; }
+.overlay-pct-badge { padding:1px 6px; font:500 9px var(--mono); color:var(--accent); background:#fcf2ee; border:1px solid #f3cfc5; border-radius:3px; }
+.overlay-bar-controls { display:flex; align-items:center; gap:7px; flex:1; max-width:380px; }
+.overlay-step-btn { width:24px; height:24px; display:grid; place-items:center; border:1px solid #d7d3c8; border-radius:3px; background:#fffefa; color:#4e5048; cursor:pointer; font-weight:700; transition:background .15s; padding:0; }
+.overlay-step-btn:hover:not(:disabled) { background:#eae6dc; color:var(--ink); }
+.overlay-step-btn:disabled { opacity:.35; cursor:not-allowed; }
+.overlay-slider { flex:1; height:4px; appearance:none; background:linear-gradient(90deg,var(--accent),#ded9ce); border-radius:4px; accent-color:var(--accent); cursor:pointer; }
+.overlay-slider::-webkit-slider-thumb { width:13px; height:13px; appearance:none; border:2px solid #fff; border-radius:50%; background:var(--accent); box-shadow:0 0 0 1px var(--accent); cursor:pointer; }
+.overlay-presets { display:flex; gap:3px; margin-left:4px; }
+.overlay-preset-btn { padding:2px 5px; font:400 8px var(--mono); border:1px solid #ded9ce; border-radius:3px; background:#fffefa; color:#686a62; cursor:pointer; }
+.overlay-preset-btn:hover { background:#f0ece4; }
+.overlay-preset-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+
+/* Floating Canvas View Controls */
+.canvas-view-controls { position:absolute; right:12px; top:12px; display:flex; align-items:center; gap:4px; background:rgba(255,254,250,.92); backdrop-filter:blur(4px); padding:3px; border:1px solid #e2ddd3; border-radius:4px; box-shadow:0 1px 4px rgba(0,0,0,.06); z-index:5; }
+.canvas-stage-btn { width:22px; height:22px; display:grid; place-items:center; border:1px solid #dedbd2; border-radius:3px; background:#fffefa; color:#53564d; cursor:pointer; font-size:12px; font-weight:700; line-height:1; }
+.canvas-stage-btn:hover { background:#ece7dd; color:var(--ink); }
+.canvas-zoom-pill { font:500 8px var(--mono); color:#5d6056; padding:0 4px; min-width:32px; text-align:center; }
+.canvas-overlay-floating { position:absolute; left:12px; bottom:12px; display:flex; align-items:center; gap:6px; background:rgba(255,254,250,.94); backdrop-filter:blur(4px); padding:4px 8px; border:1px solid #e2ddd3; border-radius:4px; box-shadow:0 1px 4px rgba(0,0,0,.06); font-size:8px; z-index:5; }
+.canvas-overlay-floating span { font-weight:600; color:#51534b; }
+.canvas-overlay-stepper { display:flex; align-items:center; gap:3px; }
+.canvas-overlay-stepper button { width:18px; height:18px; display:grid; place-items:center; border:1px solid #d4cfc4; border-radius:3px; background:#fff; color:#444; cursor:pointer; font-weight:bold; font-size:11px; }
+.canvas-overlay-stepper button:hover { background:#ede8de; }
+
+

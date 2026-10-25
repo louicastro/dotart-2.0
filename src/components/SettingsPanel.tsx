@@ -254,14 +254,44 @@ export default function SettingsPanel({
           <ChevronDown size={14} />
         </summary>
         <div className="advanced-controls">
-          <Control
-            label="Number-label size"
-            value={settings.labelSize}
-            min={6}
-            max={18}
-            suffix=" pt"
-            onChange={(value) => updateNumeric("labelSize", value)}
-          />
+          <div className="color-control-block">
+            <div className="setting-line">
+              <span>Dot color</span>
+              <span className="setting-value">{settings.dotColor || "#222522"}</span>
+            </div>
+            <div className="color-picker-row">
+              <div className="color-presets">
+                {[
+                  { label: "Charcoal", hex: "#222522" },
+                  { label: "Crimson", hex: "#e45a3a" },
+                  { label: "Cobalt", hex: "#2563eb" },
+                  { label: "Emerald", hex: "#16a34a" },
+                  { label: "Violet", hex: "#7c3aed" },
+                  { label: "Amber", hex: "#d97706" },
+                ].map((swatch) => (
+                  <button
+                    key={swatch.hex}
+                    type="button"
+                    className={`color-swatch-btn${(settings.dotColor || "#222522").toLowerCase() === swatch.hex.toLowerCase() ? " active" : ""}`}
+                    style={{ background: swatch.hex }}
+                    onClick={() => update("dotColor", swatch.hex)}
+                    title={`${swatch.label} (${swatch.hex})`}
+                    aria-label={`Set dot color to ${swatch.label}`}
+                  />
+                ))}
+              </div>
+              <label className="custom-color-input" title="Choose custom color">
+                <input
+                  type="color"
+                  value={settings.dotColor || "#222522"}
+                  onChange={(event) => update("dotColor", event.currentTarget.value)}
+                  aria-label="Pick custom dot color"
+                />
+                <span className="color-preview-circle" style={{ background: settings.dotColor || "#222522" }} />
+                <span className="color-custom-label">Custom</span>
+              </label>
+            </div>
+          </div>
           <Control
             label="Dot size"
             value={settings.dotSize}
@@ -270,6 +300,14 @@ export default function SettingsPanel({
             step={0.2}
             suffix=" px"
             onChange={(value) => updateNumeric("dotSize", value)}
+          />
+          <Control
+            label="Number-label size"
+            value={settings.labelSize}
+            min={6}
+            max={18}
+            suffix=" pt"
+            onChange={(value) => updateNumeric("labelSize", value)}
           />
           <Control
             label="Print scale"
